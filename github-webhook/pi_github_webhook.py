@@ -88,7 +88,7 @@ def should_review(event: str, payload: dict[str, Any]) -> tuple[bool, str]:
     if allowed and repo not in allowed:
         return False, f"repo not allowlisted: {repo}"
 
-    if event == "pull_request":
+    if event in {"pull_request", "pull_request_target"}:
         if action not in {"opened", "reopened", "synchronize", "ready_for_review"}:
             return False, f"ignored action={action}"
         pr = payload.get("pull_request") or {}
@@ -99,9 +99,23 @@ def should_review(event: str, payload: dict[str, Any]) -> tuple[bool, str]:
     if event == "pull_request_review_comment":
         if action not in {"created", "edited"}:
             return False, f"ignored action={action}"
+        pr = payload.get("pull_request") or {}
+        if pr.get("draft"):
+            return False, "ignored draft PR"
         body = ((payload.get("comment") or {}).get("body") or "").strip().lower()
         if "/fix" not in body:
             return False, "ignored review comment without /fix"
+        return True, "accepted"
+
+    if event == "issue_comment":
+        if action not in {"created", "edited"}:
+            return False, f"ignored action={action}"
+        issue = payload.get("issue") or {}
+        if not issue.get("pull_request"):
+            return False, "ignored non-PR issue comment"
+        body = ((payload.get("comment") or {}).get("body") or "").strip().lower()
+        if "/fix" not in body:
+            return False, "ignored issue comment without /fix"
         return True, "accepted"
 
     return False, f"ignored event={event}"
@@ -109,13 +123,17 @@ def should_review(event: str, payload: dict[str, Any]) -> tuple[bool, str]:
 
 def build_dispatch_target(event: str, payload: dict[str, Any]) -> DispatchTarget:
     repo = payload["repository"]["full_name"]
-    pr = payload["pull_request"]["number"]
-    url = payload["pull_request"]["html_url"]
     action = payload.get("action")
+    if event == "issue_comment":
+        pr = payload["issue"]["number"]
+        url = payload["issue"]["html_url"]
+    else:
+        pr = payload["pull_request"]["number"]
+        url = payload["pull_request"]["html_url"]
 
-    if event == "pull_request":
+    if event in {"pull_request", "pull_request_target"}:
         prompt = f"""
-GitHub webhook received: pull_request.{action}
+GitHub webhook received: {event}.{action}
 Repo: {repo}
 PR: #{pr}
 URL: {url}
@@ -133,23 +151,61 @@ Task:
     comment = payload["comment"]
     comment_url = comment.get("html_url", url)
     comment_body = comment.get("body", "")
+    comment_id = comment.get("id")
+
+    if event == "issue_comment":
+        prompt = f"""
+GitHub webhook received: {event}.{action}
+Repo: {repo}
+PR: #{pr}
+PR URL: {url}
+/fix Comment URL: {comment_url}
+/fix Comment ID: {comment_id}
+/fix comment body:
+{comment_body}
+
+You are pi running as an automated GitHub PR fixer, not a reviewer. Use the copied OpenClaw github/coding-agent skills and the `gh` CLI.
+
+Task:
+1. Inspect PR #{pr}, including current head SHA, changed files, checks, top-level PR comments, review summaries, and all inline review comments. Use `gh pr view`, `gh pr diff`, `gh pr checks`, and `gh api` for review comments as needed.
+2. Treat this top-level /fix as a request to address all still-relevant critiques on the PR, especially comments since the current head or comments that are not already resolved by later commits.
+3. Do not start a general PR review. Make only concrete code/test/config changes needed to satisfy the critiques.
+4. If requested changes are clear, implement them on the PR branch, run relevant validation, commit, and push.
+5. If no code change is needed or a request is ambiguous/conflicting, do not guess; post a concise PR comment explaining the non-change or asking one clarification question.
+6. After making fixes, post one concise PR comment summarizing what changed, the commit pushed, and validation run.
+7. Avoid unrelated refactors and avoid duplicate replies if this exact /fix was already handled.
+""".strip()
+        return DispatchTarget(repo=repo, pr=pr, url=url, session_suffix="fix", prompt=prompt)
+
+    in_reply_to_id = comment.get("in_reply_to_id")
+    thread_root_id = in_reply_to_id or comment_id
+    comment_path = comment.get("path")
+    comment_line = comment.get("line") or comment.get("original_line")
+    diff_hunk = comment.get("diff_hunk") or ""
     prompt = f"""
 GitHub webhook received: {event}.{action}
 Repo: {repo}
 PR: #{pr}
 PR URL: {url}
-Comment URL: {comment_url}
-Comment body:
+/fix Comment URL: {comment_url}
+/fix Comment ID: {comment_id}
+Review thread root comment ID: {thread_root_id}
+File: {comment_path}
+Line: {comment_line}
+Diff hunk:
+{diff_hunk}
+/fix comment body:
 {comment_body}
 
-You are pi running as an automated GitHub PR fixer. Use the copied OpenClaw github/coding-agent skills and the `gh` CLI.
+You are pi running as an automated GitHub PR fixer, not a reviewer. Use the copied OpenClaw github/coding-agent skills and the `gh` CLI.
 
 Task:
-1. Inspect the referenced PR review thread and determine the concrete code change requested by the /fix comment.
-2. If the requested change is clear, implement it on the PR branch, run relevant validation, commit, and push.
-3. If the requested change is ambiguous, reply in the review thread with a concise clarification question instead of guessing.
-4. After making a clear fix, reply in-thread summarizing what changed and what validation ran.
-5. Avoid unrelated refactors.
+1. Fetch and read the full referenced inline review thread before changing code. Use GitHub comments around Review thread root comment ID {thread_root_id}; include the original review comment, all replies, file path, line, and diff hunk in your reasoning.
+2. Determine the concrete change requested by the thread plus the /fix comment. Do not start a general PR review and do not post a new top-level review.
+3. If the requested change is clear, implement only that change on the PR branch, run relevant validation, commit, and push.
+4. If no code change is needed or the request is ambiguous/conflicting, do not modify code; reply in the same review thread explaining the non-change or asking one concise clarification question.
+5. After making a clear fix, reply in the same review thread summarizing what changed, the commit pushed, and what validation ran.
+6. Avoid unrelated refactors and avoid duplicate replies if this exact /fix was already handled.
 """.strip()
     return DispatchTarget(repo=repo, pr=pr, url=url, session_suffix="fix", prompt=prompt)
 
