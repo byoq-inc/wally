@@ -143,8 +143,9 @@ You are pi running as an automated GitHub PR reviewer. Use the copied OpenClaw g
 Task:
 1. Inspect the PR metadata, changed files, and diff using `gh pr view`, `gh pr diff`, and related `gh` commands.
 2. Review only the code changes for correctness, security, regressions, tests, and maintainability.
-3. Post one concise review result back to GitHub using `gh pr comment` or `gh pr review`. If there are no substantive findings, say so.
-4. Do not make code changes unless explicitly necessary for inspection. Avoid duplicate comments if an equivalent pi review was already posted for the same head SHA.
+3. For every substantive code-specific finding, post an inline PR review comment on the exact changed file/line using GitHub review comments (for example `gh api repos/{owner}/{repo}/pulls/{pr}/comments` with `commit_id`, `path`, `line`, `side=RIGHT`, and `body`, or create a review with a `comments` array). Do not put code-specific findings only in a top-level/base PR comment.
+4. If there are no substantive findings, post one concise top-level PR comment saying so. If there are findings that are genuinely not tied to a changed line, include only those in a short review summary.
+5. Do not make code changes unless explicitly necessary for inspection. Avoid duplicate comments if an equivalent pi review was already posted inline for the same head SHA.
 """.strip()
         return DispatchTarget(repo=repo, pr=pr, url=url, session_suffix="review", prompt=prompt)
 
