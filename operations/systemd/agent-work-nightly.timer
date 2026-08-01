@@ -1,0 +1,10 @@
+[Unit]
+Description=Run supervised Pi self-improvement nightly at 10 PM Eastern
+
+[Timer]
+OnCalendar=*-*-* 22:00:00 America/New_York
+Persistent=true
+Unit=agent-work-nightly-start.service
+
+[Install]
+WantedBy=timers.target

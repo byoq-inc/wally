@@ -1,0 +1,16 @@
+name: validate-sanitized-export
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate export
+        run: ./tests/check-export.sh

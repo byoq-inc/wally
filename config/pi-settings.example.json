@@ -1,0 +1,7 @@
+{
+  "defaultProvider": "<provider-name>",
+  "defaultModel": "<model-name>",
+  "defaultThinkingLevel": "medium",
+  "theme": "dark",
+  "lastChangelogVersion": "<version>"
+}

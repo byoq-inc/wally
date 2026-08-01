@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""
+OpenClaw Email Allowlist Manager
+Easily manage allowed/blocked senders for the email server
+"""
+
+import json
+import sys
+import os
+import argparse
+from datetime import datetime
+
+ALLOWLIST_FILE = "/etc/postfix/email_allowlist.json"
+
+def load_allowlist():
+    """Load current allowlist"""
+    try:
+        with open(ALLOWLIST_FILE, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"senders": [], "domains": [], "blocked": []}
+    except json.JSONDecodeError:
+        print(f"Error: Invalid JSON in {ALLOWLIST_FILE}")
+        sys.exit(1)
+
+def save_allowlist(allowlist):
+    """Save allowlist to file"""
+    try:
+        os.makedirs(os.path.dirname(ALLOWLIST_FILE), exist_ok=True)
+        
+        # Create backup
+        if os.path.exists(ALLOWLIST_FILE):
+            backup_file = f"{ALLOWLIST_FILE}.bak.{int(datetime.now().timestamp())}"
+            with open(ALLOWLIST_FILE, 'r') as src, open(backup_file, 'w') as dst:
+                dst.write(src.read())
+            print(f"Backup created: {backup_file}")
+        
+        with open(ALLOWLIST_FILE, 'w') as f:
+            json.dump(allowlist, f, indent=2)
+        
+        print(f"Allowlist updated: {ALLOWLIST_FILE}")
+        
+    except Exception as e:
+        print(f"Error saving allowlist: {e}")
+        sys.exit(1)
+
+def add_sender(email, allowlist):
+    """Add sender to allowlist"""
+    if email not in allowlist["senders"]:
+        allowlist["senders"].append(email)
+        print(f"✅ Added sender: {email}")
+    else:
+        print(f"⚠️  Sender already allowed: {email}")
+
+def remove_sender(email, allowlist):
+    """Remove sender from allowlist"""
+    if email in allowlist["senders"]:
+        allowlist["senders"].remove(email)
+        print(f"❌ Removed sender: {email}")
+    else:
+        print(f"⚠️  Sender not found: {email}")
+
+def add_domain(domain, allowlist):
+    """Add domain to allowlist"""
+    if domain not in allowlist["domains"]:
+        allowlist["domains"].append(domain)
+        print(f"✅ Added domain: {domain}")
+    else:
+        print(f"⚠️  Domain already allowed: {domain}")
+
+def remove_domain(domain, allowlist):
+    """Remove domain from allowlist"""
+    if domain in allowlist["domains"]:
+        allowlist["domains"].remove(domain)
+        print(f"❌ Removed domain: {domain}")
+    else:
+        print(f"⚠️  Domain not found: {domain}")
+
+def block_sender(email, allowlist):
+    """Add sender to blocklist"""
+    if email not in allowlist["blocked"]:
+        allowlist["blocked"].append(email)
+        print(f"🚫 Blocked sender: {email}")
+    else:
+        print(f"⚠️  Sender already blocked: {email}")
+
+def unblock_sender(email, allowlist):
+    """Remove sender from blocklist"""
+    if email in allowlist["blocked"]:
+        allowlist["blocked"].remove(email)
+        print(f"✅ Unblocked sender: {email}")
+    else:
+        print(f"⚠️  Sender not blocked: {email}")
+
+def list_allowlist(allowlist):
+    """Display current allowlist"""
+    print("📧 EMAIL ALLOWLIST")
+    print("=" * 50)
+    
+    print(f"\n✅ ALLOWED SENDERS ({len(allowlist['senders'])})")
+    for sender in sorted(allowlist["senders"]):
+        print(f"  • {sender}")
+    
+    print(f"\n✅ ALLOWED DOMAINS ({len(allowlist['domains'])})")
+    for domain in sorted(allowlist["domains"]):
+        print(f"  • {domain}")
+    
+    print(f"\n🚫 BLOCKED SENDERS ({len(allowlist['blocked'])})")
+    for blocked in sorted(allowlist["blocked"]):
+        print(f"  • {blocked}")
+
+def validate_email(email):
+    """Basic email validation"""
+    if '@' not in email and '*' not in email:
+        print(f"Error: Invalid email format: {email}")
+        return False
+    return True
+
+def main():
+    parser = argparse.ArgumentParser(description="Manage OpenClaw email allowlist")
+    parser.add_argument('action', choices=[
+        'list', 'add', 'remove', 'domain-add', 'domain-remove', 
+        'block', 'unblock', 'import', 'export'
+    ], help='Action to perform')
+    parser.add_argument('value', nargs='?', help='Email or domain to add/remove')
+    parser.add_argument('--file', help='File for import/export operations')
+    
+    args = parser.parse_args()
+    
+    allowlist = load_allowlist()
+    changed = False
+    
+    if args.action == 'list':
+        list_allowlist(allowlist)
+    
+    elif args.action == 'add':
+        if not args.value:
+            print("Error: Email address required")
+            sys.exit(1)
+        if validate_email(args.value):
+            add_sender(args.value.lower(), allowlist)
+            changed = True
+    
+    elif args.action == 'remove':
+        if not args.value:
+            print("Error: Email address required")
+            sys.exit(1)
+        remove_sender(args.value.lower(), allowlist)
+        changed = True
+    
+    elif args.action == 'domain-add':
+        if not args.value:
+            print("Error: Domain required")
+            sys.exit(1)
+        add_domain(args.value.lower(), allowlist)
+        changed = True
+    
+    elif args.action == 'domain-remove':
+        if not args.value:
+            print("Error: Domain required")
+            sys.exit(1)
+        remove_domain(args.value.lower(), allowlist)
+        changed = True
+    
+    elif args.action == 'block':
+        if not args.value:
+            print("Error: Email address required")
+            sys.exit(1)
+        if validate_email(args.value):
+            block_sender(args.value.lower(), allowlist)
+            changed = True
+    
+    elif args.action == 'unblock':
+        if not args.value:
+            print("Error: Email address required")
+            sys.exit(1)
+        unblock_sender(args.value.lower(), allowlist)
+        changed = True
+    
+    elif args.action == 'import':
+        if not args.file:
+            print("Error: --file required for import")
+            sys.exit(1)
+        try:
+            with open(args.file, 'r') as f:
+                data = json.load(f)
+            allowlist = data
+            changed = True
+            print(f"✅ Imported allowlist from {args.file}")
+        except Exception as e:
+            print(f"Error importing: {e}")
+            sys.exit(1)
+    
+    elif args.action == 'export':
+        if not args.file:
+            print("Error: --file required for export")
+            sys.exit(1)
+        try:
+            with open(args.file, 'w') as f:
+                json.dump(allowlist, f, indent=2)
+            print(f"✅ Exported allowlist to {args.file}")
+        except Exception as e:
+            print(f"Error exporting: {e}")
+            sys.exit(1)
+    
+    if changed:
+        save_allowlist(allowlist)
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll GovFiles Calendar and Granola once per minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+Persistent=true
+Unit=govfiles-proposals.service
+
+[Install]
+WantedBy=timers.target

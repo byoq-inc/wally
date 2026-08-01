@@ -1,0 +1,4 @@
+# Check GovFiles Calendar every two minutes and send one Signal brief ~15 minutes before eligible meetings.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+*/2 * * * * root /usr/local/bin/govfiles-meeting-prep >> /var/log/govfiles-meeting-prep.log 2>&1

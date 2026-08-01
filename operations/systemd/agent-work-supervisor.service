@@ -1,0 +1,17 @@
+[Unit]
+Description=Dedicated reasoning supervisor for persistent coding workers
+After=network-online.target agent-work-watchdog.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/Projects/agent-work/control
+ExecStart=/root/Projects/agent-work/control/run-supervisor.sh
+Restart=on-failure
+RestartSec=30
+KillMode=control-group
+TimeoutStopSec=45
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

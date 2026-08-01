@@ -1,0 +1,17 @@
+[Unit]
+Description=Persistent bounded coding-worker watchdog and wave scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/Projects/agent-work/control
+ExecStart=/root/Projects/agent-work/control/watchdog.sh
+Restart=on-failure
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=45
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

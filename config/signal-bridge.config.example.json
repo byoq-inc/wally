@@ -1,0 +1,29 @@
+{
+  "signal": {
+    "host": "127.0.0.1",
+    "port": 7583,
+    "allowed_senders": ["<SIGNAL_E164_SENDER>"],
+    "allow_groups": false
+  },
+  "pi": {
+    "command": ["/usr/local/bin/pi", "--mode", "rpc"],
+    "working_directory": "/srv/wally/workspace",
+    "system_prefix": "<operator-approved-system-prefix>"
+  },
+  "bridge": {
+    "runtime_dir": "/run/wally-signal-bridge",
+    "worker_count": 1,
+    "send_typing": true,
+    "max_signal_message_chars": 3500,
+    "dm_trigger_prefix": "",
+    "group_trigger_prefix": "@wally",
+    "subagent_backend": "process",
+    "tmux_subagents": false,
+    "auth_watchdog_enabled": true,
+    "auth_watchdog_interval_seconds": 300,
+    "auth_watchdog_alert_throttle_seconds": 43200,
+    "daily_conversation_log_dir": "",
+    "daily_conversation_timezone": "UTC",
+    "proposal_reaction_command": ["/usr/local/bin/govfiles-proposal-reaction"]
+  }
+}

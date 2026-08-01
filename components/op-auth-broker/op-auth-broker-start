@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+SOCKET_DIR="${OP_AUTH_RUNTIME_DIR:-/run/op-auth-broker}"
+TMUX_SOCKET="$SOCKET_DIR/tmux.sock"
+SESSION=op-auth-broker
+PROC_ROOT="${OP_AUTH_PROC_ROOT:-/proc}"
+OP_EXE="${OP_AUTH_APPROVED_OP_EXE:-/usr/bin/op}"
+TMUX="${OP_AUTH_TMUX_BIN:-tmux}"
+BROKER_COMMAND="${OP_AUTH_BROKER_COMMAND:-/usr/local/libexec/op-auth-broker --config /etc/op-auth-broker/allowlist.json --socket /run/op-auth-broker/broker.sock}"
+install -d -m 700 -o root -g root "$SOCKET_DIR"
+if [ "${1:-}" = --reload ]; then
+  [ "$#" -eq 1 ] || { echo "usage: op-auth-broker-start [--reload]" >&2; exit 2; }
+  exec /usr/local/bin/op-auth-client --socket "$SOCKET_DIR/broker.sock" reload
+elif [ "$#" -ne 0 ]; then
+  echo "usage: op-auth-broker-start [--reload]" >&2
+  exit 2
+fi
+if "$TMUX" -S "$TMUX_SOCKET" has-session -t "$SESSION" 2>/dev/null; then exit 0; fi
+rm -f -- "$SOCKET_DIR/broker.sock"
+
+# Accept authentication only from the root-owned, PID-1-supervised 1Password
+# daemon. Read it directly from procfs into this process; never print it, put it
+# in a command argument, or persist it. Refuse ambiguous/missing provenance.
+auth=
+auth_count=0
+for environ in "$PROC_ROOT"/[0-9]*/environ; do
+  pid="${environ#"$PROC_ROOT"/}"; pid="${pid%/environ}"
+  [ "$(stat -c %u "$PROC_ROOT/$pid" 2>/dev/null || printf x)" = 0 ] || continue
+  [ "$(cat "$PROC_ROOT/$pid/comm" 2>/dev/null || true)" = op ] || continue
+  [ "$(readlink -f "$PROC_ROOT/$pid/exe" 2>/dev/null || true)" = "$OP_EXE" ] || continue
+  [ "$(awk '/^PPid:/{print $2}' "$PROC_ROOT/$pid/status" 2>/dev/null)" = 1 ] || continue
+  cmdline="$(tr '\0' ' ' <"$PROC_ROOT/$pid/cmdline" 2>/dev/null || true)"
+  case "$cmdline" in "op daemon "|"op daemon") ;; *) continue ;; esac
+  candidate="$({ tr '\0' '\n' <"$environ" |
+    awk -F= '$1=="OP_SERVICE_ACCOUNT_TOKEN" {sub(/^[^=]*=/, ""); print; exit}'; } 2>/dev/null)" || true
+  [ -n "$candidate" ] || continue
+  auth_count=$((auth_count + 1))
+  if [ "$auth_count" -gt 1 ] && [ "$candidate" != "$auth" ]; then
+    unset auth candidate cmdline
+    echo "op-auth-broker-start: ambiguous approved auth provenance" >&2
+    exit 1
+  fi
+  auth="$candidate"
+  unset candidate
+done
+[ "$auth_count" -ge 1 ] || {
+  unset auth cmdline
+  echo "op-auth-broker-start: approved op daemon auth unavailable" >&2
+  exit 1
+}
+export OP_SERVICE_ACCOUNT_TOKEN="$auth"
+unset auth cmdline
+"$TMUX" -S "$TMUX_SOCKET" new-session -d -s "$SESSION" "$BROKER_COMMAND"
+unset OP_SERVICE_ACCOUNT_TOKEN
+for variable in OP_SERVICE_ACCOUNT_TOKEN OP_SERVICE_ACCOUNT GOG_KEYRING_PASSWORD; do
+  "$TMUX" -S "$TMUX_SOCKET" set-environment -gu "$variable" 2>/dev/null || true
+done
+for _ in {1..50}; do
+  if [ -n "${OP_AUTH_TEST_READY_FILE:-}" ]; then
+    [ -e "$OP_AUTH_TEST_READY_FILE" ] && exit 0
+  elif [ -S "$SOCKET_DIR/broker.sock" ] &&
+       /usr/local/bin/op-auth-client --socket "$SOCKET_DIR/broker.sock" status >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 0.1
+done
+exit 1

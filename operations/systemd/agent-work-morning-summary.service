@@ -1,0 +1,10 @@
+[Unit]
+Description=Send concise nightly Pi agent summary over Signal
+After=network-online.target signal-cli-jsonrpc.service agent-work-watchdog.service agent-work-supervisor.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/Projects/agent-work/control/morning-summary.py
+User=root
+UMask=0077

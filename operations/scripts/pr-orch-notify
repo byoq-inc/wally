@@ -1,0 +1,3 @@
+#!/bin/bash
+: "${SIGNAL_RECIPIENT:?SIGNAL_RECIPIENT is required}"
+exec /usr/bin/openclaw message send --channel signal --target "$SIGNAL_RECIPIENT" --message "$*"
