@@ -1,5 +1,0 @@
-# Monitor the GOVFILES_GOOGLE_ACCOUNT mailbox for replies, hourly 9am-5pm Eastern.
-CRON_TZ=America/New_York
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-0 9-17 * * * root /usr/local/bin/govfiles-reply-monitor >> /var/log/govfiles-reply-monitor.log 2>&1

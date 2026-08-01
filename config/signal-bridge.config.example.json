@@ -24,6 +24,6 @@
     "auth_watchdog_alert_throttle_seconds": 43200,
     "daily_conversation_log_dir": "",
     "daily_conversation_timezone": "UTC",
-    "proposal_reaction_command": ["/usr/local/bin/govfiles-proposal-reaction"]
+    "proposal_reaction_command": []
   }
 }

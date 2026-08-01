@@ -8,8 +8,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "webhook": "tsx ./pr-review-webhook-entrypoint.ts",
-    "writeback-smoke": "tsx ./extensions/pr-review-github-writeback-smoke.ts"
+    "webhook": "tsx ./pr-review-webhook-entrypoint.ts"
   },
   "dependencies": {
     "tsx": "4.21.0"

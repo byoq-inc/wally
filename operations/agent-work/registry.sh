@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Recurring worker registry. Values are trusted local configuration, never secrets.
+# shellcheck disable=SC2034 # This file is sourced; consumers use different subsets.
 CONTROL=/root/Projects/agent-work/control
 REPOS=/root/Projects/agent-work/repos
 MEMORY_DIR=/root/.pi/agent/memory/hermes

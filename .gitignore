@@ -4,16 +4,12 @@
 !.gitignore
 !.env.example
 !README.md
-!MANIFEST.md
-!inventory.json
 !LICENSE
 
 !config/
 !config/**
 !components/
 !components/**
-!docs/
-!docs/**
 !operations/
 !operations/**
 !pi/
@@ -67,4 +63,3 @@
 # Reviewed source-code exceptions (not runtime credentials or memory content).
 !pi/extensions/memory/
 !pi/extensions/memory/**
-!operations/govfiles/granola_readonly/credentials.py

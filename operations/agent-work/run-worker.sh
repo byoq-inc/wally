@@ -2,6 +2,7 @@
 set -uo pipefail
 umask 077
 id=${1:?worker id required}
+# shellcheck disable=SC1091 # Installed absolute path; registry is validated separately.
 source /root/Projects/agent-work/control/registry.sh
 workdir=$(workdir_for "$id")
 prompt=$(prompt_for "$id")

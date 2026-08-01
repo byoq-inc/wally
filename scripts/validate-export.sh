@@ -33,9 +33,6 @@ for path in paths:
     lower_parts = {part.lower() for part in path.parts}
     name = path.name.lower()
     source_memory_exception = path.is_relative_to(PurePosixPath("pi/extensions/memory"))
-    credential_source_exception = path == PurePosixPath(
-        "operations/govfiles/granola_readonly/credentials.py"
-    )
     if lower_parts & forbidden_parts and not source_memory_exception:
         errors.append(f"{path}: forbidden path category")
     if path.suffix.lower() in forbidden_suffixes or ".bak" in name:
@@ -45,7 +42,6 @@ for path in paths:
     if (
         ("secret" in name or "credential" in name)
         and path.name != "validate-export.sh"
-        and not credential_source_exception
     ):
         errors.append(f"{path}: secret-bearing filename forbidden")
 

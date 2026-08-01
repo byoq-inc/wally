@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# shellcheck disable=SC1091 # Installed absolute path; registry is validated separately.
 source /root/Projects/agent-work/control/registry.sh
 log="$CONTROL/logs/watchdog.log"
 mkdir -p "$CONTROL/state" "$CONTROL/logs"
