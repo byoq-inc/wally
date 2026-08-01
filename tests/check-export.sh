@@ -62,6 +62,14 @@ skills = sorted(Path('pi/skills').glob('*/SKILL.md'))
 allowed_markdown = {PurePosixPath('README.md'), *(PurePosixPath(p) for p in skills)}
 for skill in skills:
     text = skill.read_text()
+    # A skill may explicitly route an agent to a topic/language subtree using
+    # a placeholder (for example, references/{your_language}/...).  In that
+    # case the subtree is agent-consumed dispatch data, not standalone docs.
+    routed_reference_tree = 'references/{' in text
+    if routed_reference_tree:
+        allowed_markdown.update(
+            PurePosixPath(path) for path in skill.parent.glob('references/**/*.md')
+        )
     for raw in re.findall(r'(?:references|scripts)/[A-Za-z0-9_./-]+', text):
         raw = raw.rstrip('.,):`')
         candidate = PurePosixPath(skill.parent, raw)
