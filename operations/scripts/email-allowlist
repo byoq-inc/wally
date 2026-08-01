@@ -27,19 +27,19 @@ def save_allowlist(allowlist):
     """Save allowlist to file"""
     try:
         os.makedirs(os.path.dirname(ALLOWLIST_FILE), exist_ok=True)
-        
+
         # Create backup
         if os.path.exists(ALLOWLIST_FILE):
             backup_file = f"{ALLOWLIST_FILE}.bak.{int(datetime.now().timestamp())}"
             with open(ALLOWLIST_FILE, 'r') as src, open(backup_file, 'w') as dst:
                 dst.write(src.read())
             print(f"Backup created: {backup_file}")
-        
+
         with open(ALLOWLIST_FILE, 'w') as f:
             json.dump(allowlist, f, indent=2)
-        
+
         print(f"Allowlist updated: {ALLOWLIST_FILE}")
-        
+
     except Exception as e:
         print(f"Error saving allowlist: {e}")
         sys.exit(1)
@@ -96,15 +96,15 @@ def list_allowlist(allowlist):
     """Display current allowlist"""
     print("📧 EMAIL ALLOWLIST")
     print("=" * 50)
-    
+
     print(f"\n✅ ALLOWED SENDERS ({len(allowlist['senders'])})")
     for sender in sorted(allowlist["senders"]):
         print(f"  • {sender}")
-    
+
     print(f"\n✅ ALLOWED DOMAINS ({len(allowlist['domains'])})")
     for domain in sorted(allowlist["domains"]):
         print(f"  • {domain}")
-    
+
     print(f"\n🚫 BLOCKED SENDERS ({len(allowlist['blocked'])})")
     for blocked in sorted(allowlist["blocked"]):
         print(f"  • {blocked}")
@@ -119,20 +119,20 @@ def validate_email(email):
 def main():
     parser = argparse.ArgumentParser(description="Manage OpenClaw email allowlist")
     parser.add_argument('action', choices=[
-        'list', 'add', 'remove', 'domain-add', 'domain-remove', 
+        'list', 'add', 'remove', 'domain-add', 'domain-remove',
         'block', 'unblock', 'import', 'export'
     ], help='Action to perform')
     parser.add_argument('value', nargs='?', help='Email or domain to add/remove')
     parser.add_argument('--file', help='File for import/export operations')
-    
+
     args = parser.parse_args()
-    
+
     allowlist = load_allowlist()
     changed = False
-    
+
     if args.action == 'list':
         list_allowlist(allowlist)
-    
+
     elif args.action == 'add':
         if not args.value:
             print("Error: Email address required")
@@ -140,28 +140,28 @@ def main():
         if validate_email(args.value):
             add_sender(args.value.lower(), allowlist)
             changed = True
-    
+
     elif args.action == 'remove':
         if not args.value:
             print("Error: Email address required")
             sys.exit(1)
         remove_sender(args.value.lower(), allowlist)
         changed = True
-    
+
     elif args.action == 'domain-add':
         if not args.value:
             print("Error: Domain required")
             sys.exit(1)
         add_domain(args.value.lower(), allowlist)
         changed = True
-    
+
     elif args.action == 'domain-remove':
         if not args.value:
             print("Error: Domain required")
             sys.exit(1)
         remove_domain(args.value.lower(), allowlist)
         changed = True
-    
+
     elif args.action == 'block':
         if not args.value:
             print("Error: Email address required")
@@ -169,14 +169,14 @@ def main():
         if validate_email(args.value):
             block_sender(args.value.lower(), allowlist)
             changed = True
-    
+
     elif args.action == 'unblock':
         if not args.value:
             print("Error: Email address required")
             sys.exit(1)
         unblock_sender(args.value.lower(), allowlist)
         changed = True
-    
+
     elif args.action == 'import':
         if not args.file:
             print("Error: --file required for import")
@@ -190,7 +190,7 @@ def main():
         except Exception as e:
             print(f"Error importing: {e}")
             sys.exit(1)
-    
+
     elif args.action == 'export':
         if not args.file:
             print("Error: --file required for export")
@@ -202,7 +202,7 @@ def main():
         except Exception as e:
             print(f"Error exporting: {e}")
             sys.exit(1)
-    
+
     if changed:
         save_allowlist(allowlist)
 

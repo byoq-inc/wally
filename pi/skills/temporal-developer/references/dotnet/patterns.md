@@ -355,7 +355,7 @@ public class CancellableWorkflow
 
             // Call cleanup activity. If this throws, it will swallow the original exception which we
             // are ok with here. This could be changed to just log a failure and let the original
-            // cancellation continue. 
+            // cancellation continue.
             // The default token on Workflow.CancellationToken is now marked
             // cancelled, so we pass a different one. We use CancellationToken.None here because the
             // cleanup activity itself doesn't need to be cancellable; if it did (e.g. you want to

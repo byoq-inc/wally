@@ -42,7 +42,7 @@ temporal workflow query \
 ```bash
 # 1. Start worker (command is project dependent)
 # 2. Start workflow (command is project dependent) This code should output the workflow ID, if not, modify it to.
-temporal workflow signal --workflow-id <WORKFLOW_ID> --name "signal_name" --input '{"key": "value"}' # 3. Send it interactive events, e.g. a signal. 
+temporal workflow signal --workflow-id <WORKFLOW_ID> --name "signal_name" --input '{"key": "value"}' # 3. Send it interactive events, e.g. a signal.
 # 4. Wait for workflow to complete (use Temporal CLI to check status)
 # 5. Read workflow result, using the Temporal CLI
 # 6. Cleanup the worker process if needed.
