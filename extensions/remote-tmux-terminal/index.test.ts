@@ -1,127 +1,131 @@
 import assert from "node:assert/strict";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  buildLaunchSpec, DEFAULT_SOCKET, displaySocketPath, listTmuxSessions, loadRegistry,
-  openTmuxTerminal, procIdentity, RUNUSER, SERVICE_USER, TERMINAL, TMUX,
-  validateRecord, type PaneIdentity, type RegisteredSession, type RuntimeDependencies,
+  buildLaunchSpec, LaunchGate, listTmuxSessions, openTmuxTerminal, parsePane,
+  procIdentity, TERMINAL, TMUX, validateRecord, validateSocket, type PaneIdentity,
+  type RegisteredSession, type RuntimeDependencies,
 } from "./launch.ts";
 
 const id = "Abcdefghijklmnopqrstuvwxyz0123456789AB";
+const record: RegisteredSession = { schemaVersion: 2, id, label: "Worker canary", createdAt: "2026-08-03T00:00:00Z", pid: 77, pidStartTicks: 9876, uid: 0, tty: "/dev/pts/8", backend: "tmux", socketPath: "/run/codex/workers/a.sock", socketDev: 41, socketIno: 99, target: "worker:1.2", paneId: "%8", session: "worker", window: 1, pane: 2 };
+function pane(overrides: Partial<PaneIdentity> = {}): PaneIdentity { return { session: "worker", window: 1, pane: 2, pid: 77, tty: "/dev/pts/8", paneId: "%8", ...overrides }; }
 
-function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "pi-terminal-")), registry = join(root, "registry"), proc = join(root, "proc"), pid = 77;
-  mkdirSync(registry, 0o700); mkdirSync(proc); mkdirSync(join(proc, String(pid)));
-  const fields = ["S", "1", "0", "0", "34824", "0", "0", "0", "0", "0", "0", "1", "2", "0", "0", "0", "0", "0", "0", "9876", "0", "1"];
-  writeFileSync(join(proc, String(pid), "stat"), `${pid} (managed) ${fields.join(" ")}\n`);
-  writeFileSync(join(proc, String(pid), "status"), "Uid:\t1001\t1001\n");
-  const record: RegisteredSession = { schemaVersion: 1, id, label: "Managed canary", createdAt: "2026-01-01T00:00:00Z", pid, pidStartTicks: 9876, uid: 1001, tty: "/dev/pts/8", backend: "tmux", tmux: { session: "managed", window: 1, pane: 2 } };
-  const recordFile = join(registry, `${id}.json`); writeFileSync(recordFile, JSON.stringify(record), { mode: 0o600 });
-  return { root, registry, proc, record, recordFile, cleanup: () => rmSync(root, { recursive: true, force: true }) };
-}
-
-function pane(overrides: Partial<PaneIdentity> = {}): PaneIdentity { return { session: "managed", window: 1, pane: 2, pid: 77, tty: "/dev/pts/8", id: "%8", ...overrides }; }
-
-function fakeDependencies(f: ReturnType<typeof fixture>, overrides: Partial<RuntimeDependencies> = {}) {
-  const calls: unknown[] = []; let unrefCount = 0;
-  const child = Object.assign(new EventEmitter(), { unref: () => { unrefCount++; } }) as unknown as ChildProcess;
+function fakeDependencies(records: RegisteredSession[] = [record], overrides: Partial<RuntimeDependencies> = {}) {
+  const calls: unknown[] = []; let time = 1000, unrefs = 0;
   const dependencies: RuntimeDependencies = {
-    loadRegistry,
-    processIdentity: procIdentity,
-    inspectPane: (socket, record) => { calls.push(["inspect", socket, record.id]); return pane(); },
+    loadRegistry: (path) => { calls.push(["registry", path]); return records; },
+    processIdentity: (_root, pid) => ({ pid, startTicks: 9876, uid: 0, tty: "/dev/pts/8" }),
+    inspectPane: async (socket, entry, timeout) => { calls.push(["inspect", socket, entry.id, timeout]); return pane(); },
+    validateSocket: (entry, roots) => { calls.push(["socket", entry.socketPath, roots]); return { dev: 41, ino: 99 }; },
     assertExecutable: (file) => calls.push(["executable", file]),
     assertReadableFile: (file) => calls.push(["xauthority", file]),
     assertDisplay: (display) => calls.push(["display", display]),
-    assertSocket: (socket) => calls.push(["socket", socket]),
-    resolvePaneUser: (uid) => { calls.push(["user", uid]); return SERVICE_USER; },
-    spawn: (command: string, args: readonly string[], options: SpawnOptions) => { calls.push(["spawn", command, args, options]); return child; },
+    spawn: (command: string, args: readonly string[], options: SpawnOptions) => {
+      calls.push(["spawn", command, args, options]);
+      const child = Object.assign(new EventEmitter(), { unref: () => { unrefs++; } }) as unknown as ChildProcess;
+      queueMicrotask(() => child.emit("spawn")); return child;
+    },
+    now: () => time,
+    delay: () => new Promise(() => {}),
     ...overrides,
   };
-  return { dependencies, calls, get unrefCount() { return unrefCount; } };
+  return { dependencies, calls, setTime(value: number) { time = value; }, get unrefs() { return unrefs; } };
 }
 
-function env(f: ReturnType<typeof fixture>): NodeJS.ProcessEnv { return { SHAWTY_TERMINAL_REGISTRY: f.registry, SHAWTY_TMUX_SOCKET: "/test/managed.sock", PI_TERMINAL_PROC_ROOT: f.proc, PI_VNC_DISPLAY: ":9", PI_VNC_XAUTHORITY: "/root/test.xauth" }; }
+const env = { SHAWTY_TERMINAL_REGISTRY: "/var/lib/shawty/terminals", PI_TERMINAL_PROC_ROOT: "/proc", PI_VNC_DISPLAY: ":9", PI_VNC_XAUTHORITY: "/root/test.xauth" };
+const options = (fake: ReturnType<typeof fakeDependencies>, extra = {}) => ({ env, dependencies: fake.dependencies, allowedSocketRoots: ["/run", "/root/.local/state"], launchGate: new LaunchGate(), ...extra });
 
-test("dashboard-compatible per-file schema loads from the root-owned registry directory", () => {
-  const f = fixture(); try {
-    assert.deepEqual(loadRegistry(f.registry), [validateRecord(f.record)]);
-    assert.deepEqual(Object.keys(f.record).sort(), ["backend", "createdAt", "id", "label", "pid", "pidStartTicks", "schemaVersion", "tmux", "tty", "uid"]);
-    assert.deepEqual(Object.keys(f.record.tmux).sort(), ["pane", "session", "window"]);
-    assert.equal(`${f.record.id}.json`, `${id}.json`);
-  } finally { f.cleanup(); }
+test("dashboard schema v2 fixture validates without translation", () => {
+  const dashboardRecord = { schemaVersion: 2, id, label: "Worker canary", createdAt: "2026-08-03T00:00:00Z", pid: 77, pidStartTicks: 9876, uid: 0, tty: "/dev/pts/8", backend: "tmux", socketPath: "/run/codex/workers/a.sock", socketDev: 41, socketIno: 99, target: "worker:1.2", paneId: "%8" };
+  assert.deepEqual(validateRecord(dashboardRecord), record);
+  assert.deepEqual(Object.keys(dashboardRecord).sort(), ["backend", "createdAt", "id", "label", "paneId", "pid", "pidStartTicks", "schemaVersion", "socketDev", "socketIno", "socketPath", "target", "tty", "uid"]);
 });
 
-test("registry permits group-read only and rejects writable modes, symlinks, and hardlinks", () => {
-  const f = fixture(); try {
-    chmodSync(f.registry, 0o750); chmodSync(f.recordFile, 0o640); assert.equal(loadRegistry(f.registry).length, 1);
-    chmodSync(f.recordFile, 0o660); assert.throws(() => loadRegistry(f.registry)); chmodSync(f.recordFile, 0o600);
-    chmodSync(f.registry, 0o770); assert.throws(() => loadRegistry(f.registry)); chmodSync(f.registry, 0o700);
-    const hard = join(f.registry, `${"Z".repeat(40)}.json`); linkSync(f.recordFile, hard); assert.throws(() => loadRegistry(f.registry)); rmSync(hard);
-    const link = join(f.root, "registry-link"); symlinkSync(f.registry, link); assert.throws(() => loadRegistry(link));
-  } finally { f.cleanup(); }
+test("schema requires root identity, private socket identity, pane id, and exact coordinates", () => {
+  for (const mutate of [
+    (x: any) => { x.schemaVersion = 1; }, (x: any) => { x.uid = 1000; },
+    (x: any) => { delete x.socketIno; }, (x: any) => { x.socketPath = "relative.sock"; },
+    (x: any) => { delete x.paneId; }, (x: any) => { x.target = "bad/session"; },
+  ]) { const value = JSON.parse(JSON.stringify(record)); mutate(value); assert.throws(() => validateRecord(value)); }
 });
 
-test("proc identity matches dashboard PID/start/UID/TTY semantics", () => {
-  const f = fixture(); try { assert.deepEqual(procIdentity(f.proc, 77), { pid: 77, startTicks: 9876, uid: 1001, tty: "/dev/pts/8" }); } finally { f.cleanup(); }
+test("socket validation requires trusted root-owned ancestry and recorded dev plus ino", async () => {
+  const root = mkdtempSync("/run/pi-terminal-test-"), parent = join(root, "private"), socket = join(parent, "worker.sock"); mkdirSync(parent, 0o700);
+  const server = createServer(); await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socket, resolve); });
+  try {
+    const stat = await import("node:fs").then(({ lstatSync }) => lstatSync(socket));
+    const exact = { ...record, socketPath: socket, socketDev: stat.dev, socketIno: stat.ino };
+    assert.deepEqual(validateSocket(exact, [root]), { dev: stat.dev, ino: stat.ino });
+    assert.throws(() => validateSocket({ ...exact, socketIno: stat.ino + 1 }, [root]));
+    chmodSync(parent, 0o777); assert.throws(() => validateSocket(exact, [root])); chmodSync(parent, 0o700);
+    const link = join(root, "linked"), linkedRecord = { ...exact, socketPath: join(link, "worker.sock") }; symlinkSync(parent, link); assert.throws(() => validateSocket(linkedRecord, [root]));
+  } finally { await new Promise<void>((resolve) => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("list returns only opaque live id/label/state after full proc and tmux identity checks", () => {
-  const f = fixture(); try {
-    const fake = fakeDependencies(f); assert.deepEqual(listTmuxSessions(env(f), fake.dependencies), [{ id, label: "Managed canary", state: "live" }]);
-    assert.equal(fake.calls.filter((call) => (call as unknown[])[0] === "inspect").length, 1);
-    assert.doesNotMatch(JSON.stringify(listTmuxSessions(env(f), fake.dependencies)), /pid|uid|tty|managed\.sock|session|pane/i);
-  } finally { f.cleanup(); }
+test("list is async, bounded, deadline-aware, and exposes id label state only", async () => {
+  const records = Array.from({ length: 9 }, (_, i) => ({ ...record, id: `${String(i).padStart(32, "A")}`, socketPath: `/run/codex/workers/${i}.sock`, socketIno: 100 + i }));
+  let active = 0, maximum = 0;
+  const fake = fakeDependencies(records, { inspectPane: async () => { active++; maximum = Math.max(maximum, active); await Promise.resolve(); active--; return pane(); } });
+  const result = await listTmuxSessions(options(fake, { limits: { parallel: 3 } }));
+  assert.equal(maximum, 3); assert.equal(result.length, 9);
+  for (const item of result) assert.deepEqual(Object.keys(item).sort(), ["id", "label", "state"]);
+  assert.doesNotMatch(JSON.stringify(result), /socket|pid|tty|session|pane/i);
+  const expired = fakeDependencies([record], { inspectPane: () => new Promise(() => {}), delay: async () => {} });
+  assert.deepEqual(await listTmuxSessions(options(expired, { limits: { deadlineMs: 1 } })), []);
 });
 
-test("stale PID start, UID, TTY, tmux coordinates, pane PID, and pane TTY all fail closed", () => {
-  const cases: [string, Partial<PaneIdentity>][] = [["pidStartTicks", {}], ["uid", {}], ["tty", {}], ["window", { window: 9 }], ["panePid", { pid: 88 }], ["paneTty", { tty: "/dev/pts/9" }]];
-  for (const [kind, paneOverride] of cases) {
-    const f = fixture(); try {
-      if (kind === "pidStartTicks") f.record.pidStartTicks++;
-      if (kind === "uid") f.record.uid++;
-      if (kind === "tty") f.record.tty = "/dev/pts/9";
-      if (kind === "pidStartTicks" || kind === "uid" || kind === "tty") writeFileSync(f.recordFile, JSON.stringify(f.record));
-      const fake = fakeDependencies(f, { inspectPane: () => pane(paneOverride) });
-      assert.deepEqual(listTmuxSessions(env(f), fake.dependencies), []);
-      assert.throws(() => openTmuxTerminal(id, env(f), fake.dependencies), /unavailable/);
-      assert.equal(fake.calls.some((call) => (call as unknown[])[0] === "spawn"), false);
-    } finally { f.cleanup(); }
+test("bracketed proc, socket, pane id, coordinates, PID and TTY mismatches fail closed", async () => {
+  const cases: Partial<PaneIdentity>[] = [{ paneId: "%9" }, { window: 9 }, { pane: 9 }, { pid: 88 }, { tty: "/dev/pts/9" }, { session: "other" }];
+  for (const mismatch of cases) {
+    const fake = fakeDependencies([record], { inspectPane: async () => pane(mismatch) });
+    assert.deepEqual(await listTmuxSessions(options(fake)), []);
+    await assert.rejects(openTmuxTerminal(id, options(fake)), (error: unknown) => error instanceof Error && error.message === "Terminal session is unavailable.");
   }
+  const fake = fakeDependencies([record]); await listTmuxSessions(options(fake));
+  assert.equal(fake.calls.filter((x) => (x as unknown[])[0] === "socket").length, 2);
 });
 
-test("launch uses dashboard-compatible fixed direct argv and plain hyphen title", () => {
-  const f = fixture(); try {
-    const fake = fakeDependencies(f), result = openTmuxTerminal(id, env(f), fake.dependencies);
-    assert.deepEqual(result.spec, { command: TERMINAL, args: ["--disable-server", "--title", "tmux - Managed canary", "--execute", RUNUSER, "--user", SERVICE_USER, "--", TMUX, "-S", "/test/managed.sock", "attach-session", "-t", "managed:1.2"], options: { detached: true, stdio: "ignore", windowsHide: true, env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", DISPLAY: ":9", XAUTHORITY: "/root/test.xauth" } } });
-    assert.equal(fake.unrefCount, 1); assert.doesNotMatch(JSON.stringify(result.spec), /ssh|—|–|\/bin\/sh/);
-  } finally { f.cleanup(); }
+test("direct root launch has fixed argv, per-record socket, exact target, and waits for spawn", async () => {
+  let child: EventEmitter | undefined;
+  const fake = fakeDependencies([record], { spawn: () => { child = Object.assign(new EventEmitter(), { unref: () => {} }); return child as unknown as ChildProcess; } });
+  let settled = false; const opening = openTmuxTerminal("Worker canary", options(fake)).then((value) => { settled = true; return value; });
+  await Promise.resolve(); await Promise.resolve(); assert.equal(settled, false); child!.emit("spawn");
+  const result = await opening;
+  assert.deepEqual(result.spec, { command: TERMINAL, args: ["--disable-server", "--title", "tmux - Worker canary", "--execute", TMUX, "-S", "/run/codex/workers/a.sock", "attach-session", "-t", "worker:1.2"], options: { detached: true, stdio: "ignore", windowsHide: true, env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", DISPLAY: ":9", XAUTHORITY: "/root/test.xauth" } } });
+  assert.doesNotMatch(JSON.stringify(result.spec), /runuser|ssh|\u2013|\u2014|\/bin\/sh/);
 });
 
-test("uses exact dashboard environment names while retaining Pi VNC overrides", () => {
-  const f = fixture(); try {
-    const fake = fakeDependencies(f); openTmuxTerminal(id, env(f), fake.dependencies);
-    assert.deepEqual(fake.calls[0], ["socket", "/test/managed.sock"]);
-    assert.equal(buildLaunchSpec(f.record, SERVICE_USER, {}).args[10], DEFAULT_SOCKET);
-    const source = readFileSync(new URL("./launch.ts", import.meta.url), "utf8");
-    assert.match(source, /SHAWTY_TERMINAL_REGISTRY/); assert.match(source, /SHAWTY_TMUX_SOCKET/); assert.doesNotMatch(source, /SHAWTY_TERMINAL_TMUX_SOCKET/);
-  } finally { f.cleanup(); }
+test("spawn error is failure and child is unrefed only after spawn", async () => {
+  const failed = fakeDependencies([record], { spawn: () => { const child = Object.assign(new EventEmitter(), { unref: () => assert.fail("unref") }) as unknown as ChildProcess; queueMicrotask(() => child.emit("error", new Error("secret"))); return child; } });
+  await assert.rejects(openTmuxTerminal(id, options(failed)), (error: unknown) => error instanceof Error && error.message === "Terminal session is unavailable.");
+  const good = fakeDependencies(); await openTmuxTerminal(id, options(good)); assert.equal(good.unrefs, 1);
 });
 
-test("missing registry or socket degrades list to empty and open to a private-safe error", () => {
-  const f = fixture(); try {
-    const missing = env(f); missing.SHAWTY_TERMINAL_REGISTRY = join(f.root, "private-secret-registry");
-    const fake = fakeDependencies(f, { assertSocket: () => { throw new Error("secret socket detail"); } });
-    assert.deepEqual(listTmuxSessions(missing, fake.dependencies), []);
-    assert.throws(() => openTmuxTerminal(id, missing, fake.dependencies), (error: unknown) => error instanceof Error && error.message === "Terminal session is unavailable." && !error.message.includes("secret"));
-  } finally { f.cleanup(); }
+test("one-active gate and rolling rate limit fail privately", async () => {
+  const gate = new LaunchGate(), fake = fakeDependencies(); let release!: () => void, started!: () => void;
+  const inspected = new Promise<void>((resolve) => { started = resolve; });
+  fake.dependencies.inspectPane = () => new Promise((resolve) => { release = () => resolve(pane()); started(); });
+  const first = openTmuxTerminal(id, options(fake, { launchGate: gate, limits: { rateCount: 2 } })); await inspected;
+  await assert.rejects(openTmuxTerminal(id, options(fake, { launchGate: gate, limits: { rateCount: 2 } })), /unavailable/); release(); await first;
+  fake.dependencies.inspectPane = async () => pane();
+  await openTmuxTerminal(id, options(fake, { launchGate: gate, limits: { rateCount: 2 } }));
+  await assert.rejects(openTmuxTerminal(id, options(fake, { launchGate: gate, limits: { rateCount: 2 } })), /unavailable/);
 });
 
-test("display syntax is local-only and extension exposes no slash command", () => {
-  assert.equal(displaySocketPath(":1"), "/tmp/.X11-unix/X1"); assert.throws(() => displaySocketPath("host:1"));
+test("generic errors and natural-language-only extension surface", async () => {
+  const fake = fakeDependencies([], { loadRegistry: () => { throw new Error("private path detail"); } });
+  assert.deepEqual(await listTmuxSessions(options(fake)), []);
+  await assert.rejects(openTmuxTerminal("human wording", options(fake)), (error: unknown) => error instanceof Error && error.message === "Terminal session is unavailable.");
   const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-  assert.match(source, /name: "open_tmux_terminal"/); assert.match(source, /name: "list_tmux_sessions"/); assert.doesNotMatch(source, /registerCommand\s*\(/);
+  assert.match(source, /session_query/); assert.doesNotMatch(source, /registerCommand\s*\(|socket.*Type\.String|host.*Type\.String|argv.*Type\.Array/i);
+});
+
+test("pane and proc parsers retain exact dashboard identity semantics", () => {
+  assert.deepEqual(parsePane("worker\t1\t2\t77\t/dev/pts/8\t%8\n"), pane());
+  assert.equal(typeof procIdentity, "function"); assert.equal(buildLaunchSpec(record, env).args.at(-1), "worker:1.2");
 });

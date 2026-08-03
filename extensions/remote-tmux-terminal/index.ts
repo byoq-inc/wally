@@ -12,12 +12,12 @@ export default function remoteTmuxTerminal(pi: ExtensionAPI) {
   pi.registerTool({
     name: "open_tmux_terminal",
     label: "Open tmux Session in VNC",
-    description: "Use this tool when the user naturally asks to open a named dashboard or terminal session in VNC (for example, ‘open session Payments in VNC’). The user does not need command syntax, a slash command, a host, a socket, or a tmux name; pass only their human-friendly session wording.",
+    description: "Use this tool when the user naturally asks to open a named dashboard or terminal session in VNC (for example, 'open session Payments in VNC'). The user does not need command syntax, a slash command, a host, a socket, or a tmux name; pass only their human-friendly session wording.",
     parameters: Type.Object({
       session_query: Type.String({ description: "The human-friendly session name from the user's natural request." }),
     }),
     async execute(_id, params) {
-      const { selected } = openTmuxTerminal(params.session_query);
+      const { selected } = await openTmuxTerminal(params.session_query);
       return textResult(`Opened ${selected.label} in the VNC desktop.`, { id: selected.id, label: selected.label, state: "live" });
     },
   });
@@ -28,7 +28,7 @@ export default function remoteTmuxTerminal(pi: ExtensionAPI) {
     description: "Use only to resolve an ambiguous natural request before calling open_tmux_terminal. Returns safe labels and opaque IDs only; the user never needs slash commands or connection details.",
     parameters: Type.Object({}),
     async execute() {
-      const sessions = listTmuxSessions();
+      const sessions = await listTmuxSessions();
       return textResult(JSON.stringify(sessions), { sessions });
     },
   });
