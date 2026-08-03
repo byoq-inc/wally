@@ -94,7 +94,8 @@ test("direct root launch has fixed argv, per-record socket, exact target, and wa
   let child: EventEmitter | undefined;
   const fake = fakeDependencies([record], { spawn: () => { child = Object.assign(new EventEmitter(), { unref: () => {} }); return child as unknown as ChildProcess; } });
   let settled = false; const opening = openTmuxTerminal("Worker canary", options(fake)).then((value) => { settled = true; return value; });
-  await Promise.resolve(); await Promise.resolve(); assert.equal(settled, false); child!.emit("spawn");
+  while (!child) await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false); child.emit("spawn");
   const result = await opening;
   assert.deepEqual(result.spec, { command: TERMINAL, args: ["--disable-server", "--title", "tmux - Worker canary", "--execute", TMUX, "-S", "/run/codex/workers/a.sock", "attach-session", "-t", "worker:1.2"], options: { detached: true, stdio: "ignore", windowsHide: true, env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", DISPLAY: ":9", XAUTHORITY: "/root/test.xauth" } } });
   assert.doesNotMatch(JSON.stringify(result.spec), /runuser|ssh|\u2013|\u2014|\/bin\/sh/);
@@ -104,6 +105,25 @@ test("spawn error is failure and child is unrefed only after spawn", async () =>
   const failed = fakeDependencies([record], { spawn: () => { const child = Object.assign(new EventEmitter(), { unref: () => assert.fail("unref") }) as unknown as ChildProcess; queueMicrotask(() => child.emit("error", new Error("secret"))); return child; } });
   await assert.rejects(openTmuxTerminal(id, options(failed)), (error: unknown) => error instanceof Error && error.message === "Terminal session is unavailable.");
   const good = fakeDependencies(); await openTmuxTerminal(id, options(good)); assert.equal(good.unrefs, 1);
+});
+
+test("late spawn after its deadline is killed and remains rate-accounted", async () => {
+  const gate = new LaunchGate(); const expirations: Array<() => void> = []; let child!: EventEmitter & { kill: () => boolean }, kills = 0, unrefs = 0;
+  const fake = fakeDependencies([record], {
+    delay: () => new Promise<void>((resolve) => { expirations.push(resolve); }),
+    spawn: () => {
+      child = Object.assign(new EventEmitter(), { kill: () => { kills++; return false; }, unref: () => { unrefs++; } });
+      return child as unknown as ChildProcess;
+    },
+  });
+  const launch = openTmuxTerminal(id, options(fake, { launchGate: gate, limits: { deadlineMs: 1, rateCount: 1 } }));
+  while (!child) await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(expirations.length, 2); expirations[1]();
+  await assert.rejects(launch, (error: unknown) => error instanceof Error && error.message === "Terminal session is unavailable.");
+  assert.equal(kills, 1); assert.equal(unrefs, 0);
+  await assert.rejects(openTmuxTerminal(id, options(fake, { launchGate: gate, limits: { deadlineMs: 1, rateCount: 1 } })), /unavailable/);
+  child.emit("spawn");
+  assert.equal(kills, 2); assert.equal(unrefs, 0);
 });
 
 test("one-active gate and rolling rate limit fail privately", async () => {

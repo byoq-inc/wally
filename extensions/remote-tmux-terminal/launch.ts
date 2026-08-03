@@ -218,11 +218,13 @@ async function boundedMap<T, R>(items: readonly T[], parallel: number, work: (it
 
 export class LaunchGate {
   private active = false; private launches: number[] = [];
-  async run<T>(now: () => number, windowMs: number, count: number, action: () => Promise<T>): Promise<T> {
+  async run<T>(now: () => number, windowMs: number, count: number, action: (accountLaunch: () => void) => Promise<T>): Promise<T> {
     const time = now(); this.launches = this.launches.filter((item) => time - item < windowMs);
     if (this.active || this.launches.length >= count) throw new Error(PRIVATE_ERROR);
     this.active = true;
-    try { const result = await action(); this.launches.push(now()); return result; } finally { this.active = false; }
+    let accounted = false;
+    const accountLaunch = () => { if (!accounted) { accounted = true; this.launches.push(now()); } };
+    try { const result = await action(accountLaunch); accountLaunch(); return result; } finally { this.active = false; }
   }
 }
 const defaultLaunchGate = new LaunchGate();
@@ -236,28 +238,43 @@ export async function listTmuxSessions(options: RuntimeOptions = {}): Promise<Sa
   } catch { return []; }
 }
 
-function awaitSpawn(child: ChildProcess): Promise<void> {
+function awaitSpawn(child: ChildProcess, timeoutMs: number, dependencies: RuntimeDependencies): Promise<void> {
   return new Promise((resolvePromise, reject) => {
-    const cleanup = () => { child.off("spawn", onSpawn); child.off("error", onError); };
-    const onSpawn = () => { cleanup(); resolvePromise(); }, onError = () => { cleanup(); reject(new Error("spawn failed")); };
-    child.once("spawn", onSpawn); child.once("error", onError);
+    let abandoned = false, settled = false;
+    const cleanup = () => { child.off("spawn", onSpawn); child.off("error", onError); child.off("close", onClose); };
+    const terminate = () => { try { child.kill(); } catch { /* The child may not have an OS process yet. */ } };
+    const onSpawn = () => {
+      if (abandoned) { terminate(); cleanup(); return; }
+      settled = true; cleanup(); resolvePromise();
+    };
+    const onError = () => { cleanup(); if (!settled) { settled = true; reject(new Error("spawn failed")); } };
+    const onClose = () => { if (abandoned) cleanup(); };
+    child.once("spawn", onSpawn); child.once("error", onError); child.once("close", onClose);
+    void dependencies.delay(timeoutMs).then(() => {
+      if (settled) return;
+      settled = true; abandoned = true; terminate(); reject(new Error("deadline"));
+    });
   });
 }
 
 export async function openTmuxTerminal(query: string, options: RuntimeOptions = {}): Promise<{ selected: RegisteredSession; spec: LaunchSpec }> {
   const config = settings(options);
   try {
-    return await config.launchGate.run(config.dependencies.now, config.limits.rateWindowMs, config.limits.rateCount, async () => withDeadline((async () => {
+    return await config.launchGate.run(config.dependencies.now, config.limits.rateWindowMs, config.limits.rateCount, async (accountLaunch) => {
+      const { selected, spec } = await withDeadline((async () => {
       const selected = resolveSession(query, config.dependencies.loadRegistry(config.registry));
       await validateLive(selected, { dependencies: config.dependencies, allowedSocketRoots: config.allowedSocketRoots, procRoot: config.procRoot, inspectMs: config.limits.inspectMs });
       const spec = buildLaunchSpec(selected, config.env);
       for (const executable of [TERMINAL, TMUX]) config.dependencies.assertExecutable(executable);
       config.dependencies.assertDisplay(config.display); config.dependencies.assertReadableFile(config.xauthority);
       config.dependencies.validateSocket(selected, config.allowedSocketRoots);
-      const child = config.dependencies.spawn(spec.command, spec.args, spec.options);
-      await awaitSpawn(child); child.unref();
       return { selected, spec };
-    })(), config.limits.deadlineMs, config.dependencies));
+      })(), config.limits.deadlineMs, config.dependencies);
+      const child = config.dependencies.spawn(spec.command, spec.args, spec.options);
+      accountLaunch();
+      await awaitSpawn(child, config.limits.deadlineMs, config.dependencies); child.unref();
+      return { selected, spec };
+    });
   } catch (error) {
     if (error instanceof Error && error.message === AMBIGUOUS_ERROR) throw error;
     throw new Error(PRIVATE_ERROR);
