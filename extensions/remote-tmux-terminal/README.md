@@ -1,39 +1,35 @@
 # Local VNC tmux terminal
 
-This Pi extension lets the Signal agent satisfy natural requests such as “open the Payments dashboard session in VNC.” The user does not use a slash command and never supplies a host, socket, tmux name, or shell command.
+This Pi extension handles natural requests such as “open the Payments dashboard session in VNC.” It exposes `open_tmux_terminal` and `list_tmux_sessions`; there is no slash command, SSH target, socket selector, arbitrary tmux target, or shell command.
 
-The extension provides two model tools:
+## Dashboard-compatible registry
 
-- `open_tmux_terminal`, taking only `session_query`, resolves and opens a registered live session.
-- `list_tmux_sessions`, taking no input, returns only opaque IDs, safe labels, and `live`/`stale` state for ambiguity resolution.
-
-## Registry
-
-The sole session authority is the root-owned JSON file `/var/lib/shawty-terminal/registry`; it must be a regular file not writable by group or other users:
+`SHAWTY_TERMINAL_REGISTRY` selects the root-owned registry **directory** (default `/var/lib/shawty-terminal/registry`). Each session is one root-owned `<opaque-id>.json` regular file. The directory and records may be group-readable, but must never be writable by group or other users; symlinks and multiply-linked records are rejected.
 
 ```json
 {
-  "version": 1,
-  "sessions": [
-    {
-      "id": "payments",
-      "label": "Payments Dashboard",
-      "session": "payments-live",
-      "pane": "%1"
-    }
-  ]
+  "schemaVersion": 1,
+  "id": "Abcdefghijklmnopqrstuvwxyz0123456789AB",
+  "label": "Payments Dashboard",
+  "createdAt": "2026-01-01T00:00:00Z",
+  "pid": 1234,
+  "pidStartTicks": 9876,
+  "uid": 1001,
+  "tty": "/dev/pts/8",
+  "backend": "tmux",
+  "tmux": { "session": "payments", "window": 0, "pane": 0 }
 }
 ```
 
-Unknown fields and unsafe IDs, labels, tmux session names, or pane IDs are rejected. Resolution prefers an exact opaque ID or case-insensitive exact label, then permits a unique label substring. It never falls back to an arbitrary tmux session. Before launch, the registered session/pane identity must appear live on the managed socket.
+Before listing or opening a record, the extension brackets tmux inspection with `/proc` reads and requires exact agreement across the registered PID, start ticks, UID and TTY and the tmux session, window, pane, pane PID and pane TTY. Listing reveals only opaque `id`, safe `label`, and `state`. Missing or unsafe registry/socket state fails closed; listing returns no entries and opening returns a generic unavailable error.
 
 ## Fixed local launch
 
-The production tmux socket is `/run/shawty-terminal-tmux/managed.sock`. The extension opens `/usr/bin/xfce4-terminal --disable-server` on display `:1`, then directly executes `/usr/sbin/runuser` as the fixed `shawty-terminal` account and `/usr/bin/tmux` against that socket. There is no SSH path and no shell evaluation.
+`SHAWTY_TMUX_SOCKET` selects the fixed managed socket (default `/run/shawty-terminal-tmux/managed.sock`). A validated record launches fixed absolute binaries directly: `/usr/bin/xfce4-terminal`, `/usr/sbin/runuser` with the fixed `shawty-terminal` account, and `/usr/bin/tmux -S … attach-session -t <exact-recorded-target>`. No shell or SSH is involved.
 
-`PI_VNC_DISPLAY`, `PI_VNC_XAUTHORITY`, `SHAWTY_TERMINAL_REGISTRY`, and `SHAWTY_TERMINAL_TMUX_SOCKET` are overridable for isolated tests. Defaults are `:1`, `/root/.Xauthority`, the registry above, and the managed socket above.
+`PI_VNC_DISPLAY` and `PI_VNC_XAUTHORITY` retain the Pi-specific VNC overrides and default to `:1` and `/root/.Xauthority`.
 
-Run the deterministic unit suite with:
+Run the deterministic suite with:
 
 ```sh
 npx --yes tsx --test extensions/remote-tmux-terminal/index.test.ts
