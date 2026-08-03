@@ -53,30 +53,9 @@ Use `with_aws_access.py` to pull `AWS_access` from 1Password and run a database/
 /root/.pi/agent/skills/db-readonly/scripts/with_aws_access.py --ssh-key-file -- \
   bash -lc 'ssh -i "$AWS_ACCESS_KEY_FILE" -N -L 15432:db.internal:5432 "$AWS_ACCESS_USERNAME@$AWS_ACCESS_HOSTNAME"'
 
-# Start a long-running remote tmux session on the EC2/bastion host, then detach locally.
-/root/.pi/agent/skills/db-readonly/scripts/with_aws_access.py --ssh-key-file -- \
-  /root/.pi/agent/skills/db-readonly/scripts/ec2_tmux_session.py \
-    --session build-company-search-mv \
-    --command "psql \"\$DATABASE_URL\" -v ON_ERROR_STOP=1 -f /tmp/build_company_search_mv.sql"
 ```
 
 If using `op` directly, follow the 1Password skill's tmux requirement. The default item is `op://Shawty/AWS_access`; override with `AWS_ACCESS_OP_VAULT` or `AWS_ACCESS_OP_ITEM`.
-
-## EC2 tmux helper
-
-Use `scripts/ec2_tmux_session.py` when a database maintenance job must keep running after the local laptop disconnects. Run it through `with_aws_access.py --ssh-key-file` so the private key is written to a temporary `0600` file and removed afterward.
-
-The helper SSHes to `AWS_ACCESS_USERNAME@AWS_ACCESS_HOSTNAME` by default, creates a detached remote tmux session, starts the command, and prints the remote attach command and log path. It does not print secrets.
-
-```bash
-/root/.pi/agent/skills/db-readonly/scripts/with_aws_access.py --ssh-key-file -- \
-  /root/.pi/agent/skills/db-readonly/scripts/ec2_tmux_session.py \
-    --session build-search-mv \
-    --cwd /home/ubuntu \
-    --command 'psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f build_search_mv.sql'
-```
-
-Attach later from the EC2 host with `tmux attach -t build-search-mv`.
 
 ## Guard script
 
