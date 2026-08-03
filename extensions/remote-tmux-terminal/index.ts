@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { openTmuxTerminal, validateSession, validateTarget } from "./launch.ts";
+import { listTmuxSessions, openTmuxTerminal } from "./launch.ts";
 
 export * from "./launch.ts";
 
@@ -11,37 +11,25 @@ function textResult(text: string, details: Record<string, unknown>) {
 export default function remoteTmuxTerminal(pi: ExtensionAPI) {
   pi.registerTool({
     name: "open_tmux_terminal",
-    label: "Open Remote tmux Terminal",
-    description: "Open an XFCE terminal on the VPS VNC desktop and attach SSH to a named remote tmux session. Uses existing SSH config, agent, and keys.",
+    label: "Open tmux Session in VNC",
+    description: "Use this tool when the user naturally asks to open a named dashboard or terminal session in VNC (for example, ‘open session Payments in VNC’). The user does not need command syntax, a slash command, a host, a socket, or a tmux name; pass only their human-friendly session wording.",
     parameters: Type.Object({
-      target: Type.String({ description: "SSH config alias or user@host." }),
-      session: Type.String({ description: "Remote tmux session name." }),
+      session_query: Type.String({ description: "The human-friendly session name from the user's natural request." }),
     }),
     async execute(_id, params) {
-      openTmuxTerminal(params.target, params.session);
-      const target = validateTarget(params.target);
-      const session = validateSession(params.session);
-      return textResult(`Opened VNC terminal for ${target}, tmux session ${session}.`, { target, session });
+      const { selected } = openTmuxTerminal(params.session_query);
+      return textResult(`Opened ${selected.label} in the VNC desktop.`, { id: selected.id, label: selected.label, state: "live" });
     },
   });
 
-  pi.registerCommand("tmux-window", {
-    description: "Open VNC terminal: /tmux-window <ssh-target> <tmux-session>",
-    handler: async (args, ctx) => {
-      try {
-        const parts = args.trim() ? args.trim().split(/\s+/) : [];
-        if (parts.length > 2) throw new Error("Usage: /tmux-window <ssh-target> <tmux-session>");
-        let [target, session] = parts;
-        if ((!target || !session) && ctx.mode === "tui") {
-          target ||= (await ctx.ui.input("SSH target", "user@host or SSH config alias"))?.trim();
-          session ||= (await ctx.ui.input("tmux session", "session name"))?.trim();
-        }
-        if (!target || !session) throw new Error("Both SSH target and tmux session are required. Usage: /tmux-window <ssh-target> <tmux-session>");
-        openTmuxTerminal(target, session);
-        ctx.ui.notify(`Opened VNC terminal for ${validateTarget(target)}, tmux session ${validateSession(session)}.`, "info");
-      } catch (error) {
-        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-      }
+  pi.registerTool({
+    name: "list_tmux_sessions",
+    label: "List Available VNC Sessions",
+    description: "Use only to resolve an ambiguous natural request before calling open_tmux_terminal. Returns safe labels and opaque IDs only; the user never needs slash commands or connection details.",
+    parameters: Type.Object({}),
+    async execute() {
+      const sessions = listTmuxSessions();
+      return textResult(JSON.stringify(sessions), { sessions });
     },
   });
 }
