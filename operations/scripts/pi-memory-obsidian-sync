@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+export HOME=/root
+export PATH=/usr/local/bin:/usr/bin:/bin
+exec /usr/bin/flock -n /run/lock/pi-memory-obsidian-sync.lock \
+  /usr/bin/node /root/.pi/agent/pr-review/node_modules/tsx/dist/cli.mjs \
+  /usr/local/libexec/pi-memory-obsidian-sync.ts

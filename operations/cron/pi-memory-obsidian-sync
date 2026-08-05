@@ -1,0 +1,3 @@
+# Export canonical Pi memory to Obsidian after the nightly 8:00 AM ET cutoff.
+CRON_TZ=America/New_York
+5 8 * * * root set -a; . /etc/pr-orchestrator/secrets.env; set +a; /usr/local/bin/pi-memory-obsidian-sync >>/var/log/pi-memory-obsidian-sync.log 2>&1

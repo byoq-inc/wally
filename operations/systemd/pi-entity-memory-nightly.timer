@@ -1,0 +1,11 @@
+[Unit]
+Description=Run entity-memory reconciliation before the existing nightly workflow
+
+[Timer]
+OnCalendar=*-*-* 21:50:00 America/New_York
+Persistent=true
+AccuracySec=1s
+Unit=pi-entity-memory-nightly.service
+
+[Install]
+WantedBy=timers.target

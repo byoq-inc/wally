@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""Root-only, memory-only named-secret broker."""
+import argparse
+import asyncio
+import json
+import os
+import signal
+import socket
+import stat
+import struct
+import subprocess
+import time
+from collections import OrderedDict
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+MAX_REQUEST = 8192
+MAX_CONFIG = 1024 * 1024
+MAX_NAME = 128
+MAX_ITEM_JSON = 1024 * 1024
+MAX_VALUE = 65536
+
+
+def load_config(path):
+    """Read and validate a root-only config without following symlinks."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("config_not_regular")
+        if info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o077:
+            raise ValueError("config_permissions")
+        if info.st_size > MAX_CONFIG:
+            raise ValueError("config_too_large")
+        chunks = []
+        remaining = MAX_CONFIG + 1
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+    finally:
+        os.close(fd)
+    if len(raw) > MAX_CONFIG:
+        raise ValueError("config_too_large")
+    try:
+        config = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid_config_json") from exc
+    allowed = {"secrets", "callers", "vault", "discovery_callers", "cache_limit"}
+    if not isinstance(config, dict) or not {"secrets", "callers"} <= set(config) or set(config) - allowed:
+        raise ValueError("invalid_config_schema")
+    secrets, callers = config["secrets"], config["callers"]
+    if not isinstance(secrets, dict) or not isinstance(callers, dict):
+        raise ValueError("invalid_config_schema")
+    for name, spec in secrets.items():
+        if (not isinstance(name, str) or not name or not isinstance(spec, dict)
+                or set(spec) != {"ref"} or not isinstance(spec["ref"], str)
+                or not spec["ref"].startswith("op://") or "\x00" in spec["ref"]
+                or "\n" in spec["ref"]):
+            raise ValueError("invalid_secret_config")
+    for caller, names in callers.items():
+        if (not isinstance(caller, str) or not caller or not isinstance(names, list)
+                or len(names) != len(set(names))
+                or any(not isinstance(name, str) or name not in secrets for name in names)):
+            raise ValueError("invalid_caller_config")
+    vault = config.get("vault")
+    discovery_callers = config.get("discovery_callers", [])
+    cache_limit = config.get("cache_limit", 128)
+    if not valid_name(vault) or not isinstance(discovery_callers, list) or \
+            len(discovery_callers) != len(set(discovery_callers)) or \
+            any(not isinstance(x, str) or not x for x in discovery_callers) or \
+            not isinstance(cache_limit, int) or isinstance(cache_limit, bool) or not 1 <= cache_limit <= 1024:
+        raise ValueError("invalid_discovery_config")
+    return config
+
+
+def valid_name(value):
+    """Accept ordinary item/field names, never paths, refs, options, or controls."""
+    return (isinstance(value, str) and 0 < len(value) <= MAX_NAME
+            and value == value.strip() and not value.startswith("-")
+            and "/" not in value and "\\" not in value and "op://" not in value.lower()
+            and all(0x20 <= ord(char) < 0x7f for char in value))
+
+
+class Broker:
+    def __init__(self, config, config_path, op_path, cooldown, probe_limit):
+        self.config = config
+        self.config_path = config_path
+        self.op_path = op_path
+        self.cooldown = cooldown
+        self.probe_limit = probe_limit
+        self.cache = {}
+        self.dynamic_cache = OrderedDict()
+        self.dynamic_locks = {}
+        self.dynamic_locks_lock = asyncio.Lock()
+        self.locks = {name: asyncio.Lock() for name in config["secrets"]}
+        self.started = time.time()
+        self.circuit_until = 0.0
+        self.circuit_reason = None
+        self.probes = 0
+        self.circuit_generation = 0
+        self.counts = {"requests": 0, "hits": 0, "upstream": 0, "failures": 0,
+                       "rate_limits": 0, "rejected": 0, "invalidations": 0,
+                       "resolutions": 0, "dynamic_hits": 0, "evictions": 0}
+        self.counts.update({"reloads": 0, "reload_failures": 0})
+        self.last_reload = None
+        self.last_reload_error = None
+        self.last_upstream = None
+        self.last_rate_limit = None
+
+    def status(self):
+        now = time.time()
+        return {
+            "started_at": self.started,
+            "cache": {name: {"cached": name in self.cache,
+                             "loaded_at": self.cache[name][1] if name in self.cache else None}
+                      for name in sorted(self.config["secrets"])},
+            "circuit": {"state": "open" if now < self.circuit_until else "closed",
+                        "reason": self.circuit_reason if self.circuit_until else None,
+                        "until": self.circuit_until or None, "recovery_probes": self.probes},
+            "counts": dict(self.counts), "last_upstream_at": self.last_upstream,
+            "last_rate_limit_at": self.last_rate_limit,
+            "reload": {"last_success_at": self.last_reload,
+                       "last_error": self.last_reload_error},
+            "discovery": {"cached": len(self.dynamic_cache),
+                          "limit": self.config.get("cache_limit", 128),
+                          "inflight": len(self.dynamic_locks)},
+        }
+
+    def authorized(self, caller, name):
+        return name in self.config["callers"].get(caller, [])
+
+    def before_upstream(self, now):
+        """Admit a call and return the circuit generation it may complete."""
+        if now < self.circuit_until:
+            error = ("rate_limit_circuit_open" if self.circuit_reason == "rate_limit"
+                     else "upstream_circuit_open")
+            raise RuntimeError(error)
+        if self.circuit_until:
+            if self.probes >= self.probe_limit:
+                self.open_circuit(self.circuit_reason or "upstream_failure", now)
+                raise RuntimeError("upstream_circuit_open")
+            self.probes += 1
+        return self.circuit_generation
+
+    def open_circuit(self, reason, now=None):
+        now = time.time() if now is None else now
+        self.circuit_generation += 1
+        self.circuit_until = now + self.cooldown
+        self.circuit_reason = reason
+        self.probes = 0
+        if reason == "rate_limit":
+            self.last_rate_limit = now
+
+    def close_circuit(self, admission):
+        """Complete only the generation under which this call was admitted."""
+        if admission != self.circuit_generation:
+            return
+        self.circuit_until = 0.0
+        self.circuit_reason = None
+        self.probes = 0
+
+    @asynccontextmanager
+    async def dynamic_key_lock(self, key):
+        """Singleflight a key and discard its lock after all users depart."""
+        async with self.dynamic_locks_lock:
+            entry = self.dynamic_locks.get(key)
+            if entry is None:
+                entry = [asyncio.Lock(), 0]
+                self.dynamic_locks[key] = entry
+            entry[1] += 1
+        try:
+            async with entry[0]:
+                yield
+        finally:
+            async with self.dynamic_locks_lock:
+                entry[1] -= 1
+                if entry[1] == 0 and self.dynamic_locks.get(key) is entry:
+                    del self.dynamic_locks[key]
+
+    def reload(self):
+        """Atomically install a validated config, retaining only safe caches."""
+        try:
+            new_config = load_config(self.config_path)
+        except Exception as exc:
+            self.counts["reload_failures"] += 1
+            self.last_reload_error = str(exc)
+            raise RuntimeError("reload_rejected") from exc
+        old_config = self.config
+        self.config = new_config
+        if (old_config.get("vault") != new_config.get("vault") or
+                old_config.get("discovery_callers", []) != new_config.get("discovery_callers", [])):
+            self.dynamic_cache.clear()
+        limit = new_config.get("cache_limit", 128)
+        while len(self.dynamic_cache) > limit:
+            self.dynamic_cache.popitem(last=False)
+            self.counts["evictions"] += 1
+        for name in list(self.cache):
+            old_ref = old_config["secrets"].get(name, {}).get("ref")
+            new_ref = new_config["secrets"].get(name, {}).get("ref")
+            if old_ref != new_ref:
+                self.cache.pop(name, None)
+        for name in new_config["secrets"]:
+            self.locks.setdefault(name, asyncio.Lock())
+        self.counts["reloads"] += 1
+        self.last_reload = time.time()
+        self.last_reload_error = None
+
+    async def load(self, name, ref):
+        cached = self.cache.get(name)
+        if cached and cached[2] == ref:
+            self.counts["hits"] += 1
+            return cached[0]
+        async with self.locks[name]:
+            cached = self.cache.get(name)
+            if cached and cached[2] == ref:
+                self.counts["hits"] += 1
+                return cached[0]
+            now = time.time()
+            admission = self.before_upstream(now)
+            self.counts["upstream"] += 1
+            self.last_upstream = now
+            proc = await asyncio.create_subprocess_exec(
+                self.op_path, "read", "--no-newline", ref,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            out, err = await proc.communicate()
+            if proc.returncode:
+                self.counts["failures"] += 1
+                msg = err.decode("utf-8", "replace").lower()
+                if "429" in msg or "rate limit" in msg or "too many requests" in msg:
+                    self.counts["rate_limits"] += 1
+                    self.open_circuit("rate_limit")
+                    raise RuntimeError("rate_limited")
+                # Authentication/network failures also get a conservative
+                # cooldown. This prevents scheduled callers from hammering an
+                # unavailable account and permits one bounded later probe.
+                self.open_circuit("upstream_failure")
+                raise RuntimeError("upstream_failed")
+            if not out or b"\x00" in out or b"\n" in out:
+                self.counts["failures"] += 1
+                self.open_circuit("upstream_failure")
+                raise RuntimeError("invalid_upstream_value")
+            value = out.decode("utf-8")
+            current = self.config["secrets"].get(name)
+            if current and current["ref"] == ref:
+                self.cache[name] = (value, time.time(), ref)
+            self.close_circuit(admission)
+            return value
+
+    def classify_upstream(self, err):
+        msg = err.decode("utf-8", "replace").lower()
+        if "429" in msg or "rate limit" in msg or "too many requests" in msg:
+            return "rate_limited"
+        if "multiple" in msg or "ambiguous" in msg or "isn't unique" in msg or "not unique" in msg:
+            return "item_ambiguous"
+        if "not found" in msg or "doesn't exist" in msg or "no item" in msg:
+            return "item_not_found"
+        return "upstream_failed"
+
+    async def resolve(self, item, field):
+        if not valid_name(item) or not valid_name(field):
+            raise ValueError("invalid_item_or_field")
+        key = (item, field)
+        cached = self.dynamic_cache.get(key)
+        if cached:
+            self.dynamic_cache.move_to_end(key)
+            self.counts["dynamic_hits"] += 1
+            return cached[0]
+        async with self.dynamic_key_lock(key):
+            cached = self.dynamic_cache.get(key)
+            if cached:
+                self.dynamic_cache.move_to_end(key)
+                self.counts["dynamic_hits"] += 1
+                return cached[0]
+            now = time.time()
+            admission = self.before_upstream(now)
+            self.counts["upstream"] += 1
+            self.counts["resolutions"] += 1
+            self.last_upstream = now
+            proc = await asyncio.create_subprocess_exec(
+                self.op_path, "item", "get", item, "--vault",
+                self.config.get("vault"), "--format", "json",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            out, err = await proc.communicate()
+            if proc.returncode:
+                self.counts["failures"] += 1
+                error = self.classify_upstream(err)
+                if error == "rate_limited":
+                    self.counts["rate_limits"] += 1
+                    self.open_circuit("rate_limit")
+                elif error == "upstream_failed":
+                    self.open_circuit("upstream_failure")
+                else:
+                    self.close_circuit(admission)
+                raise RuntimeError(error)
+            if len(out) > MAX_ITEM_JSON:
+                self.counts["failures"] += 1
+                self.open_circuit("upstream_failure")
+                raise RuntimeError("invalid_upstream_response")
+            try:
+                document = json.loads(out)
+                fields = document["fields"]
+                matches = [entry for entry in fields if isinstance(entry, dict) and
+                           (entry.get("id") == field or entry.get("label") == field)]
+                if len(matches) > 1:
+                    raise RuntimeError("field_ambiguous")
+                if not matches:
+                    raise RuntimeError("field_not_found")
+                value = matches[0].get("value")
+                if (not isinstance(value, str) or not value or len(value.encode()) > MAX_VALUE
+                        or "\x00" in value or "\n" in value):
+                    raise RuntimeError("invalid_upstream_value")
+            except RuntimeError as exc:
+                if str(exc) in ("field_not_found", "field_ambiguous"):
+                    self.close_circuit(admission)
+                else:
+                    self.counts["failures"] += 1
+                    self.open_circuit("upstream_failure")
+                raise
+            except (KeyError, TypeError, json.JSONDecodeError) as exc:
+                self.counts["failures"] += 1
+                self.open_circuit("upstream_failure")
+                raise RuntimeError("invalid_upstream_response") from exc
+            self.dynamic_cache[key] = (value, time.time())
+            limit = self.config.get("cache_limit", 128)
+            while len(self.dynamic_cache) > limit:
+                self.dynamic_cache.popitem(last=False)
+                self.counts["evictions"] += 1
+            self.close_circuit(admission)
+            return value
+
+    async def handle(self, reader, writer):
+        try:
+            peer = writer.get_extra_info("socket").getsockopt(
+                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+            _, uid, _ = struct.unpack("3i", peer)
+            if uid != 0:
+                raise PermissionError("root_required")
+            raw = await reader.readline()
+            if not raw.endswith(b"\n") or len(raw) > MAX_REQUEST:
+                raise ValueError("invalid_request")
+            req = json.loads(raw)
+            self.counts["requests"] += 1
+            action = req.get("action")
+            if action == "status":
+                response = {"ok": True, "status": self.status()}
+            elif action == "get":
+                name, caller = req.get("name"), req.get("caller")
+                if not self.authorized(caller, name):
+                    self.counts["rejected"] += 1
+                    raise PermissionError("unauthorized")
+                ref = self.config["secrets"][name]["ref"]
+                response = {"ok": True, "value": await self.load(name, ref)}
+            elif action == "resolve":
+                caller, item, field = req.get("caller"), req.get("item"), req.get("field")
+                if caller not in self.config.get("discovery_callers", []):
+                    self.counts["rejected"] += 1
+                    raise PermissionError("unauthorized")
+                response = {"ok": True, "value": await self.resolve(item, field)}
+            elif action == "invalidate":
+                name, caller = req.get("name"), req.get("caller")
+                if caller != "operator" or name not in self.config["secrets"]:
+                    self.counts["rejected"] += 1
+                    raise PermissionError("unauthorized")
+                self.cache.pop(name, None)
+                self.counts["invalidations"] += 1
+                response = {"ok": True, "name": name}
+            elif action == "reload":
+                if req.get("caller") != "operator":
+                    self.counts["rejected"] += 1
+                    raise PermissionError("unauthorized")
+                self.reload()
+                response = {"ok": True, "reloaded": True}
+            else:
+                raise ValueError("unknown_action")
+        except Exception as exc:
+            response = {"ok": False, "error": str(exc)}
+        writer.write(json.dumps(response, separators=(",", ":")).encode() + b"\n")
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+
+async def main_async(args):
+    os.umask(0o077)
+    config_path = Path(args.config)
+    try:
+        config = load_config(config_path)
+    except Exception as exc:
+        raise SystemExit(str(exc)) from exc
+    broker = Broker(config, config_path, args.op, args.cooldown, args.probe_limit)
+    sock = Path(args.socket)
+    sock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(sock.parent, 0o700)
+    if sock.exists():
+        sock.unlink()
+    server = await asyncio.start_unix_server(broker.handle, path=str(sock))
+    os.chmod(sock, 0o600)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+    def signal_reload():
+        try:
+            broker.reload()
+        except RuntimeError:
+            pass
+    loop.add_signal_handler(signal.SIGHUP, signal_reload)
+    async with server:
+        await stop.wait()
+    sock.unlink(missing_ok=True)
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--config", required=True)
+    p.add_argument("--socket", required=True)
+    p.add_argument("--op", default="/usr/bin/op")
+    p.add_argument("--cooldown", type=float, default=900)
+    p.add_argument("--probe-limit", type=int, default=1)
+    asyncio.run(main_async(p.parse_args()))
+
+
+if __name__ == "__main__":
+    main()

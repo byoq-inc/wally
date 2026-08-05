@@ -1,0 +1,21 @@
+[Unit]
+Description=Privacy-preserving entity-memory reconciliation
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+RuntimeDirectory=pi-entity-memory-nightly
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/flock --nonblock --conflict-exit-code=0 /run/pi-entity-memory-nightly/reconcile.lock /opt/pi-entity-memory/nightly-reconcile.sh
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/pi-entity-memory/store
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true

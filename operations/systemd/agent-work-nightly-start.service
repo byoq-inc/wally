@@ -1,0 +1,10 @@
+[Unit]
+Description=Start bounded recurring nightly Pi workers
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/Projects/agent-work/control/nightly-start.sh
+User=root
+UMask=0077

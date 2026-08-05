@@ -1,0 +1,29 @@
+[Unit]
+Description=PR Orchestrator (autonomous PR review pipeline)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent
+Group=agent
+WorkingDirectory=/opt/pr-orchestrator
+ExecStart=/usr/bin/python3 -m pr_orchestrator.main --mode all
+Restart=on-failure
+RestartSec=5
+
+Environment=HOME=/home/agent
+Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONPATH=/opt/pr-orchestrator/src
+Environment=PR_ORCH_WEBHOOK_PORT=9877
+Environment=PR_ORCH_WEBHOOK_BIND=127.0.0.1
+Environment=PR_ORCH_MAKEFILE_DRY_RUN=0
+Environment=PR_ORCH_COMMENT_DRY_RUN=0
+Environment=OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
+EnvironmentFile=/etc/wally-harness/pr-orchestrator.env
+
+StandardOutput=append:/opt/pr-orchestrator/logs/service.log
+StandardError=append:/opt/pr-orchestrator/logs/service.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Client for the root-only named-secret broker."""
+import argparse
+import json
+import os
+import socket
+import sys
+
+
+def request(path, payload):
+    data = (json.dumps(payload, separators=(",", ":")) + "\n").encode()
+    sock = socket.socket(socket.AF_UNIX)
+    sock.settimeout(30)
+    sock.connect(path)
+    sock.sendall(data)
+    chunks = []
+    while True:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        if b"\n" in chunk:
+            break
+    response = json.loads(b"".join(chunks))
+    if not response.get("ok"):
+        raise SystemExit("op-auth-client: " + response.get("error", "request_failed"))
+    return response
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--socket", default="/run/op-auth-broker/broker.sock")
+    sub = p.add_subparsers(dest="action", required=True)
+    get = sub.add_parser("get")
+    get.add_argument("--caller", required=True)
+    get.add_argument("--name", required=True)
+    get.add_argument("--fd", type=int)
+    resolve = sub.add_parser("resolve")
+    resolve.add_argument("--caller", required=True)
+    resolve.add_argument("--item", required=True)
+    resolve.add_argument("--field", required=True)
+    resolve.add_argument("--fd", type=int)
+    sub.add_parser("status")
+    sub.add_parser("reload")
+    inv = sub.add_parser("invalidate")
+    inv.add_argument("name")
+    args = p.parse_args()
+    if args.action in ("get", "resolve"):
+        payload = ({"action": "get", "caller": args.caller, "name": args.name}
+                   if args.action == "get" else
+                   {"action": "resolve", "caller": args.caller,
+                    "item": args.item, "field": args.field})
+        value = request(args.socket, payload)["value"]
+        if args.fd is not None:
+            os.write(args.fd, value.encode())
+        else:
+            sys.stdout.write(value)
+    elif args.action == "status":
+        print(json.dumps(request(args.socket, {"action": "status"})["status"],
+                         sort_keys=True, indent=2))
+    elif args.action == "invalidate":
+        request(args.socket, {"action": "invalidate", "caller": "operator",
+                              "name": args.name})
+    else:
+        request(args.socket, {"action": "reload", "caller": "operator"})
+
+
+if __name__ == "__main__":
+    main()

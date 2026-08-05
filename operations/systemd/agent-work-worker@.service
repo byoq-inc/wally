@@ -1,0 +1,22 @@
+[Unit]
+Description=Persistent bounded coding worker %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/Projects/agent-work/control
+ExecStart=/root/Projects/agent-work/control/run-worker.sh %i
+Restart=on-failure
+RestartSec=15
+KillMode=control-group
+TimeoutStopSec=45
+UMask=0077
+Nice=5
+CPUQuota=150%
+MemoryMax=3G
+TasksMax=512
+OOMPolicy=stop
+
+[Install]
+WantedBy=multi-user.target
