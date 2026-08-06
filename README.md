@@ -22,6 +22,10 @@ Excluded intentionally:
 - Secret-bearing concrete config files; use `config.example.json` templates instead
 - Nested webhook workspace checkouts; recreate workspaces locally as needed
 
+## Memory history provenance
+
+Durable deleted-history summaries are sourced only from privacy-curated `USER.md` / `MEMORY.md` bullets after a staged transaction verifies that canonical retention actually committed their eviction. Session compaction may regenerate that summary but never contributes message or transcript prose. See `extensions/memory/README.md` for the exact transaction recovery, provenance, forget, and profile-isolation boundaries.
+
 ## Restore notes
 
 Copy this checkout into `~/.pi/agent` or selectively copy subdirectories. Then recreate local-only files such as auth/config secrets from 1Password or the host environment.

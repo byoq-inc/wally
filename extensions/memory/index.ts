@@ -6,12 +6,29 @@ import { promisify } from "node:util";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { atomicWrite, HistorySummaryManager, matchesForgetQuery, recoverActiveMemoryFile } from "./history-summary.ts";
+import { registerMemoryLifecycleHooks, writeWithHistoryRetention } from "./lifecycle.ts";
+import { ProfileLock } from "./profile-lock.ts";
 
 const MEMORY_ROOT = process.env.PI_MEMORY_DIR || join(process.env.HOME || "/root", ".pi", "agent", "memory");
 const HERMES_DIR = process.env.PI_MEMORY_HERMES_DIR || join(MEMORY_ROOT, "hermes");
 const USER_FILE = join(HERMES_DIR, "USER.md");
 const MEMORY_FILE = join(HERMES_DIR, "MEMORY.md");
 const SKILL_IDEAS_FILE = join(HERMES_DIR, "SKILL_IDEAS.md");
+const HISTORY_SOURCE_FILE = join(HERMES_DIR, "HISTORY_ELIGIBLE.json");
+const HISTORY_SUMMARY_FILE = join(HERMES_DIR, "HISTORY_SUMMARY.md");
+const SESSION_FORGET_FILE = join(HERMES_DIR, "SESSION_FORGET_TOMBSTONES.json");
+const SESSION_DB_FILE = process.env.PI_SESSION_RECALL_DB || join(HERMES_DIR, "sessions.sqlite");
+const PROFILE_LOCK_FILE = process.env.PI_MEMORY_PROFILE_LOCK || join(HERMES_DIR, ".memory-profile.lock");
+const profileLock = new ProfileLock(PROFILE_LOCK_FILE);
+const historySummary = new HistorySummaryManager({
+  sourceFile: HISTORY_SOURCE_FILE,
+  summaryFile: HISTORY_SUMMARY_FILE,
+  maxSummaryChars: Number(process.env.PI_MEMORY_HISTORY_SUMMARY_MAX_CHARS || 12_000),
+  lockFile: PROFILE_LOCK_FILE,
+  tombstoneFile: SESSION_FORGET_FILE,
+  activeFiles: { user: USER_FILE, memory: MEMORY_FILE },
+});
 const SKILLS_DIR = process.env.PI_SKILLS_DIR || join(process.env.HOME || "/root", ".pi", "agent", "skills");
 const USER_MAX_CHARS = Number(process.env.PI_MEMORY_USER_MAX_CHARS || 12_000);
 const MEMORY_MAX_CHARS = Number(process.env.PI_MEMORY_MAX_CHARS || 24_000);
@@ -58,6 +75,12 @@ const skillDraftSchema = Type.Object({
 });
 
 type SkillDraftParams = Static<typeof skillDraftSchema>;
+
+const forgetSchema = Type.Object({
+  query: Type.String({ description: "Exact topic or durable fact to purge from eligible removed history and its derived summary." }),
+});
+
+type ForgetParams = Static<typeof forgetSchema>;
 
 type ParsedMemory = { header: string; bullets: string[] };
 
@@ -117,20 +140,57 @@ async function readParsed(target: "user" | "memory"): Promise<ParsedMemory> {
   await ensureFiles();
   const file = target === "user" ? USER_FILE : MEMORY_FILE;
   const fallback = target === "user" ? DEFAULT_USER : DEFAULT_MEMORY;
-  return parseMemory(await readFile(file, "utf8"), fallback);
+  return parseMemory(await recoverActiveMemoryFile(file, fallback, SESSION_FORGET_FILE, () => profileLock.assertOwned()), fallback);
+}
+
+async function recoverProfileMemory(): Promise<void> {
+  // The session tombstone is the commit point. Every extension-owned reader runs
+  // this idempotent recovery before returning content, so any interrupted forget
+  // is suppression-safe immediately and converges all derived/active artifacts.
+  await historySummary.recover();
+  await readParsed("user");
+  await readParsed("memory");
 }
 
 async function writeParsed(target: "user" | "memory", parsed: ParsedMemory) {
   const file = target === "user" ? USER_FILE : MEMORY_FILE;
   const max = target === "user" ? USER_MAX_CHARS : MEMORY_MAX_CHARS;
-  let bullets = [...parsed.bullets];
-  let content = parsed.header + bullets.map((b) => `- ${b}`).join("\n") + (bullets.length ? "\n" : "");
-  while (content.length > max && bullets.length > 0) {
-    bullets.shift(); // bounded memory: drop oldest first after dedupe/consolidation
-    content = parsed.header + bullets.map((b) => `- ${b}`).join("\n") + (bullets.length ? "\n" : "");
-  }
-  await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, content, "utf8");
+  await writeWithHistoryRetention({
+    header: parsed.header,
+    bullets: parsed.bullets,
+    maxChars: max,
+    target,
+    commitCuratedEvictions: (target, candidates, postContent, writeActive) =>
+      historySummary.commitCuratedEvictions(target, candidates, postContent, writeActive),
+    write: async (content) => {
+      await atomicWrite(file, content, () => profileLock.assertOwned());
+    },
+  });
+}
+
+async function forgetEverywhere(query: string): Promise<{ purged: number; activePurged: number; sessionPurged: number }> {
+  return profileLock.run(async () => {
+    // Resolve every pending retention transaction before the session helper
+    // enumerates recall surfaces and creates the authoritative tombstone snapshot.
+    // Committed evictions are promoted into eligible source, uncommitted intents
+    // are discarded, and malformed, divergent, or equal-identity state aborts
+    // with pending evidence preserved before acknowledgement.
+    let session: any;
+    const archived = await historySummary.forget(query, async () => {
+      session = await runSessionRecall(["forget", query]);
+    });
+    let activePurged = 0;
+    for (const target of ["user", "memory"] as const) {
+      const parsed = await readParsed(target);
+      const retained = parsed.bullets.filter((bullet) => !matchesForgetQuery(bullet, query));
+      activePurged += parsed.bullets.length - retained.length;
+      if (retained.length !== parsed.bullets.length) {
+        parsed.bullets = retained;
+        await writeParsed(target, parsed);
+      }
+    }
+    return { purged: archived.purged, activePurged, sessionPurged: Number(session.purged || 0) };
+  });
 }
 
 function chooseTarget(params: AddParams): "user" | "memory" {
@@ -141,6 +201,7 @@ function chooseTarget(params: AddParams): "user" | "memory" {
 }
 
 async function addMemory(params: AddParams) {
+  return profileLock.run(async () => {
   const secret = hasSecret(params.text);
   if (secret) throw new Error(`Refusing to store possible secret (${secret}). Store only non-sensitive durable facts.`);
 
@@ -176,9 +237,12 @@ async function addMemory(params: AddParams) {
   parsed.bullets = next;
   await writeParsed(target, parsed);
   return { action, target, file: target === "user" ? USER_FILE : MEMORY_FILE, replaced };
+  });
 }
 
 async function searchMemory(params: SearchParams) {
+  return profileLock.run(async () => {
+  await recoverProfileMemory();
   const limit = Math.max(1, Math.min(params.limit || 8, 25));
   const targets: Array<"user" | "memory"> = params.target === "user" ? ["user"] : params.target === "memory" ? ["memory"] : ["user", "memory"];
   const rows: Array<{ target: "user" | "memory"; bullet: string; score: number }> = [];
@@ -190,6 +254,7 @@ async function searchMemory(params: SearchParams) {
     }
   }
   return rows.sort((a, b) => b.score - a.score).slice(0, limit);
+  });
 }
 
 function formatRows(rows: Awaited<ReturnType<typeof searchMemory>>) {
@@ -201,14 +266,26 @@ async function runSessionRecall(args: string[]) {
   const { stdout } = await execFileAsync("python3", [SESSION_RECALL_SCRIPT, ...args], {
     maxBuffer: 1024 * 1024 * 5,
     timeout: 60_000,
+    env: {
+      ...process.env,
+      PI_MEMORY_HERMES_DIR: HERMES_DIR,
+      PI_SESSION_RECALL_DB: SESSION_DB_FILE,
+      PI_SESSION_FORGET_FILE: SESSION_FORGET_FILE,
+      PI_MEMORY_PROFILE_LOCK: PROFILE_LOCK_FILE,
+      PI_MEMORY_PROFILE_LOCK_HELD: profileLock.isHeld() ? "1" : "0",
+      PI_MEMORY_PROFILE_LOCK_OWNER: profileLock.ownerIdentity() ?? "",
+    },
   });
   return JSON.parse(stdout);
 }
 
 async function sessionSearch(params: SessionSearchParams, cwd?: string) {
-  const args = ["search", params.query, "--limit", String(params.limit || 8)];
-  if (params.cwdOnly && cwd) args.push("--cwd", cwd);
-  return runSessionRecall(args);
+  return profileLock.run(async () => {
+    await recoverProfileMemory();
+    const args = ["search", params.query, "--limit", String(params.limit || 8)];
+    if (params.cwdOnly && cwd) args.push("--cwd", cwd);
+    return runSessionRecall(args);
+  });
 }
 
 function formatSessionResults(result: any) {
@@ -278,11 +355,20 @@ async function createSkillDraft(params: SkillDraftParams) {
 }
 
 async function renderInjectedMemory(): Promise<string> {
+  return profileLock.run(async () => {
   await ensureFiles();
+  await recoverProfileMemory();
   const [user, memory] = await Promise.all([readFile(USER_FILE, "utf8"), readFile(MEMORY_FILE, "utf8")]);
-  const parts = [user.trim(), memory.trim()].filter((p) => /\n[-*]\s+/.test(p));
+  let historySummaryText = "";
+  try {
+    historySummaryText = (await readFile(HISTORY_SUMMARY_FILE, "utf8")).trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const parts = [user.trim(), memory.trim(), historySummaryText].filter((p) => /\n[-*]\s+/.test(p));
   if (!parts.length) return "";
   return `Curated persistent memory (Hermes-style; use as durable context, not as absolute truth):\n\n${parts.join("\n\n")}`;
+  });
 }
 
 export default function (pi: ExtensionAPI) {
@@ -322,12 +408,30 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "memory_forget",
+    label: "Memory Forget",
+    description: "Purge a topic from eligible removed-history source material and regenerate the derived long-term history summary.",
+    promptSnippet: "Purge explicitly forgotten history rather than summarizing it.",
+    promptGuidelines: [
+      "Use memory_forget for explicit user requests to forget, delete, or remove information from memory/history.",
+    ],
+    parameters: forgetSchema,
+    async execute(_id, params: ForgetParams) {
+      const result = await forgetEverywhere(params.query);
+      return {
+        content: [{ type: "text", text: `Purged ${result.purged} eligible, ${result.activePurged} active, and ${result.sessionPurged} indexed session record(s); durable recall suppression recorded; regenerated ${HISTORY_SUMMARY_FILE}. Raw Pi session JSONL was not rewritten.` }],
+        details: { ...result, sourceFile: HISTORY_SOURCE_FILE, summaryFile: HISTORY_SUMMARY_FILE },
+      };
+    },
+  });
+
+  pi.registerTool({
     name: "memory_reindex",
     label: "Memory Curate",
     description: "Compatibility no-op for old indexed memory. Hermes-style memory is file-backed and injected directly; this verifies files exist.",
     parameters: Type.Object({}),
     async execute() {
-      await ensureFiles();
+      await profileLock.run(recoverProfileMemory);
       return {
         content: [{ type: "text", text: `Hermes-style memory needs no index. Files:\n${USER_FILE}\n${MEMORY_FILE}` }],
         details: { userFile: USER_FILE, memoryFile: MEMORY_FILE },
@@ -341,7 +445,10 @@ export default function (pi: ExtensionAPI) {
     description: "Rebuild SQLite FTS5 recall index from saved Pi JSONL sessions.",
     parameters: Type.Object({}),
     async execute() {
-      const result = await runSessionRecall(["reindex"]);
+      const result = await profileLock.run(async () => {
+        await recoverProfileMemory();
+        return runSessionRecall(["reindex"]);
+      });
       return {
         content: [{ type: "text", text: `Indexed ${result.chunks} chunks from ${result.sessions} sessions into ${result.db}` }],
         details: result,
@@ -411,7 +518,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("memory", {
-    description: "Memory commands: add <text>, user <text>, search <query>, sessions <query>, skill-ideas, reindex-sessions, path",
+    description: "Memory commands: add <text>, user <text>, forget <topic>, search <query>, sessions <query>, skill-ideas, reindex-sessions, path",
     handler: async (args, ctx) => {
       const [cmd, ...rest] = args.trim().split(/\s+/);
       const text = rest.join(" ").trim();
@@ -422,6 +529,9 @@ export default function (pi: ExtensionAPI) {
         } else if (cmd === "user" && text) {
           const result = await addMemory({ text, target: "user" });
           ctx.ui.notify(`User memory ${result.action}: ${result.file}`, "info");
+        } else if (cmd === "forget" && text) {
+          const result = await forgetEverywhere(text);
+          ctx.ui.notify(`Purged ${result.purged} eligible, ${result.activePurged} active, and ${result.sessionPurged} indexed session record(s); durable recall suppression recorded. Raw session JSONL was not rewritten.`, "info");
         } else if (cmd === "search" && text) {
           ctx.ui.notify(formatRows(await searchMemory({ query: text })), "info");
         } else if (cmd === "sessions" && text) {
@@ -429,13 +539,16 @@ export default function (pi: ExtensionAPI) {
         } else if (cmd === "skill-ideas") {
           ctx.ui.notify((await listSkillIdeas()).slice(0, 12_000), "info");
         } else if (cmd === "reindex-sessions") {
-          const result = await runSessionRecall(["reindex"]);
+          const result = await profileLock.run(async () => {
+            await recoverProfileMemory();
+            return runSessionRecall(["reindex"]);
+          });
           ctx.ui.notify(`Indexed ${result.chunks} chunks from ${result.sessions} sessions`, "info");
         } else if (cmd === "path") {
           await ensureFiles();
-          ctx.ui.notify(`USER.md: ${USER_FILE}\nMEMORY.md: ${MEMORY_FILE}\nSkill ideas: ${SKILL_IDEAS_FILE}\nSession DB: ${join(HERMES_DIR, "sessions.sqlite")}`, "info");
+          ctx.ui.notify(`USER.md: ${USER_FILE}\nMEMORY.md: ${MEMORY_FILE}\nHistory source: ${HISTORY_SOURCE_FILE}\nHistory summary: ${HISTORY_SUMMARY_FILE}\nSession forget tombstones: ${SESSION_FORGET_FILE}\nSkill ideas: ${SKILL_IDEAS_FILE}\nSession DB: ${SESSION_DB_FILE}`, "info");
         } else {
-          ctx.ui.notify("Usage: /memory add <text> | user <text> | search <query> | sessions <query> | skill-ideas | reindex-sessions | path", "info");
+          ctx.ui.notify("Usage: /memory add <text> | user <text> | forget <topic> | search <query> | sessions <query> | skill-ideas | reindex-sessions | path", "info");
         }
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
@@ -443,31 +556,24 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on("before_agent_start", async (event, ctx) => {
-    const parts: string[] = [];
-    const curated = await renderInjectedMemory();
-    if (curated) parts.push(curated);
-
-    if (event.prompt && !event.prompt.startsWith("/memory")) {
-      try {
-        const recall = await sessionSearch({ query: event.prompt, limit: 5, cwdOnly: false }, ctx.cwd);
-        if (Array.isArray(recall.results) && recall.results.length) {
-          parts.push(`Relevant prior session recall (SQLite FTS5; use as context, verify if needed):\n\n${formatSessionResults(recall)}`);
-        }
-      } catch {
-        // Session recall is opportunistic; never block the agent turn.
-      }
-    }
-
-    parts.push("Skill self-improvement loop: when a task reveals a reusable workflow, repeated procedure, missing capability, or improvement to an existing skill, use skill_note. When the workflow is stable with clear triggers and steps, use skill_create_draft. Do not store secrets or one-off task noise.");
-
-    return {
-      message: {
-        customType: "memory-recall",
-        display: false,
-        content: parts.join("\n\n"),
-        details: { userFile: USER_FILE, memoryFile: MEMORY_FILE, skillIdeasFile: SKILL_IDEAS_FILE, sessionDb: join(HERMES_DIR, "sessions.sqlite") },
-      },
-    };
+  registerMemoryLifecycleHooks(pi, {
+    forgetEverywhere,
+    regenerateHistory: () => profileLock.run(async () => {
+      await recoverProfileMemory();
+      return historySummary.regenerate();
+    }),
+    renderInjectedMemory,
+    sessionSearch: (query, cwd) => sessionSearch({ query, limit: 5, cwdOnly: false }, cwd),
+    formatSessionResults,
+    withProfileLock: (work) => profileLock.run(work),
+    details: {
+      userFile: USER_FILE,
+      memoryFile: MEMORY_FILE,
+      historySourceFile: HISTORY_SOURCE_FILE,
+      historySummaryFile: HISTORY_SUMMARY_FILE,
+      sessionForgetFile: SESSION_FORGET_FILE,
+      skillIdeasFile: SKILL_IDEAS_FILE,
+      sessionDb: SESSION_DB_FILE,
+    },
   });
 }
