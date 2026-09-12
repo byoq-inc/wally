@@ -11,7 +11,12 @@ required=(
   .env.example README.md
   config/pi-settings.example.json config/github-webhook.config.example.json
   config/signal-bridge.config.example.json config/op-auth-allowlist.example.json
-  pi/extensions/entity-memory/index.ts pi/signal-bridge/signal_pi_bridge.py
+  pi/extensions/entity-memory/index.ts pi/extensions/bash-timeout/index.ts
+  pi/extensions/remote-tmux-terminal/index.ts pi/extensions/remote-tmux-terminal/README.md
+  pi/extensions/repository-knowledge-graph/index.ts
+  pi/skills/astryx-design-system/SKILL.md pi/skills/gh-issues/SKILL.md
+  pi/skills/hallmark/SKILL.md pi/skills/safe-service-release-recovery/SKILL.md
+  pi/skills/signal-group-creator/SKILL.md pi/signal-bridge/signal_pi_bridge.py
   pi/github-webhook.py pi/pr-review/package.json operations/agent-work/watchdog.sh
   operations/systemd/pi-entity-memory-nightly.service
   components/op-auth-broker/op-auth-broker components/op-auth-broker/op-auth-client
@@ -26,6 +31,8 @@ test ! -e inventory.json
 test ! -d docs
 test ! -d operations/govfiles
 test ! -e pi/proof-of-work/events.jsonl
+test ! -e pi/extensions/goal.ts
+test -z "$(find pi -type f -name '*.skill' -print)"
 test ! -e pi/signal-bridge/config.json
 test ! -e pi/signal-bridge/thread-state.json
 test ! -e pi/signal-bridge/pm-session.json
@@ -40,7 +47,8 @@ python3 -m py_compile \
   components/op-auth-broker/op-auth-client \
   pi/github-webhook.py pi/github-review/*.py pi/signal-bridge/*.py \
   operations/agent-work/*.py pi/extensions/memory/session-recall.py \
-  pi/skills/db-readonly/scripts/*.py pi/skills/web-search/scripts/*.py
+  pi/skills/db-readonly/scripts/*.py pi/skills/web-search/scripts/*.py \
+  pi/skills/signal-group-creator/scripts/*.py
 
 mapfile -t shell_files < <(find components operations scripts tests pi/skills -type f \
   \( -name '*.sh' -o -path '*/op-auth-broker-start' \) -print | sort)
@@ -56,10 +64,16 @@ errors = []
 tracked = {PurePosixPath(p) for p in __import__('subprocess').check_output(
     ['git', 'ls-files'], text=True).splitlines()}
 
-# Every retained non-top-level Markdown file must be an agent entrypoint or be
-# explicitly named by one. No standalone human documentation is allowed.
+# Every retained non-top-level Markdown file must be an agent entrypoint,
+# an extension-local README, or be explicitly named by one. No detached human
+# documentation tree is allowed.
 skills = sorted(Path('pi/skills').glob('*/SKILL.md'))
-allowed_markdown = {PurePosixPath('README.md'), *(PurePosixPath(p) for p in skills)}
+extension_docs = sorted(Path('pi/extensions').glob('*/README.md'))
+allowed_markdown = {
+    PurePosixPath('README.md'),
+    *(PurePosixPath(p) for p in skills),
+    *(PurePosixPath(p) for p in extension_docs),
+}
 for skill in skills:
     text = skill.read_text()
     # A skill may explicitly route an agent to a topic/language subtree using
@@ -83,7 +97,7 @@ for path in tracked:
         errors.append(f'{path}: Markdown is not an agent-consumed skill dependency')
 
 # Check ordinary repository-local Markdown links and file:// references.
-sources = [Path('README.md'), *skills]
+sources = [Path('README.md'), *skills, *extension_docs]
 for source in sources:
     try:
         text = source.read_text()

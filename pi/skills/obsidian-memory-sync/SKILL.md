@@ -1,6 +1,6 @@
 ---
 name: obsidian-memory-sync
-description: Safely export canonical privacy-minimized Pi Hermes memory files to an Obsidian vault through a GitHub App, using a fresh main checkout, exact-path validation, branch/PR-only delivery, and Signal notification. Use for one-off or scheduled Pi-memory-to-Obsidian synchronization and troubleshooting.
+description: Safely export canonical Pi Hermes memory and curated private Signal-group memory vault files to the private GitHub Obsidian memory repository through a GitHub App, using a fresh main checkout, exact-path validation, branch/PR-only delivery, and Signal notification. Use for one-off or scheduled Pi-memory-to-Obsidian synchronization and troubleshooting.
 ---
 
 # obsidian-memory-sync
@@ -9,15 +9,21 @@ Use this skill when its description matches the user's task. Keep the workflow c
 
 ## Workflow
 
-1. Confirm canonical source files and destination repository/path; never export raw sessions, secrets, transcripts, or non-curated state.
-2. Authenticate through the approved runtime-only GitHub App path; never persist installation credentials in remotes, files, command output, or logs.
-3. Clone the destination repository's current default branch into a fresh temporary worktree; never reuse or push a stale local vault checkout.
-4. Copy only the approved curated memory files, then deterministically reject any changed path outside the exact allowlist.
-5. If content is unchanged, create no branch or PR and send a concise no-change notification when authorized.
-6. If content changed, create a uniquely named branch, commit only allowlisted paths, push the branch, and open a PR; never push main or merge automatically.
-7. Verify destination files match canonical sources byte-for-byte and verify the PR diff contains only allowlisted paths.
-8. Send the PR link and concise changed-file summary through the authorized channel; send a bounded failure notice if creation fails, without exposing credentials or private memory contents.
-9. For recurring runs, schedule after memory maintenance completes, use a lock, fresh temporary checkout, private logs, runtime-only auth, deterministic dry-run validation, and explicit timezone.
+1. Confirm canonical sources and destination repository/path. Require the GitHub memory repository to be private; fail closed rather than exporting group memory to a public repository.
+2. Build the source/destination allowlist from the active bridge config and `GroupVaults`, not from directory discovery:
+   - canonical Hermes curated files
+   - every configured private Signal vault's `MEMORY.md` and `SUMMARY.md`
+   - optional `INSTRUCTIONS.md` only when present
+   Map each vault ID to a stable dedicated path under the repository's Signal-group memory area. A newly approved vault ID must be added in the same sync change that enrolls the group.
+3. Never export `runtime/`, sessions, transcripts, audit logs, backups, credentials, extensions, executable files, or arbitrary skill contents. Reject symlinks and any source or destination path outside the exact allowlist.
+4. Authenticate through the approved runtime-only GitHub App path; never persist installation credentials in remotes, files, command output, or logs.
+5. Clone the destination repository's current default branch into a fresh temporary worktree; never reuse or push a stale local vault checkout.
+6. Copy only allowlisted curated files, then deterministically reject any changed path outside the exact expected destination set. Treat a missing configured vault destination as a sync failure, not an omission.
+7. If content is unchanged, create no branch or PR and send a concise no-change notification when authorized.
+8. If content changed, create a uniquely named branch, commit only allowlisted paths, push the branch, and open a PR; never push main or merge automatically.
+9. Verify destination files match canonical sources byte-for-byte, every configured vault is represented, and the PR diff contains only allowlisted paths.
+10. Send a bounded plain-text result and PR link through the authorized channel. Include one controlled topic line per configured Signal-group vault, derived only from its curated `SUMMARY.md`; never echo summary prose, IDs, paths, credentials, or private memory details. Treat missing, empty, unsafe, or non-descriptive summaries visibly as unavailable.
+11. Distinguish manual and scheduled notification titles explicitly. Scheduled invocations must pass `--trigger scheduled`; never infer the trigger from wall-clock time. For recurring runs, schedule after memory maintenance completes, use a lock, fresh temporary checkout, private logs, runtime-only auth, deterministic dry-run validation, and explicit timezone.
 
 ## Self-improvement
 

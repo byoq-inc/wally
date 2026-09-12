@@ -1,0 +1,4 @@
+interface:
+  display_name: "Safe Service Release Recovery"
+  short_description: "Gate releases and recover services safely"
+  default_prompt: "Use $safe-service-release-recovery to validate a service release or plan a rollback-safe recovery."
