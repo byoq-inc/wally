@@ -20,7 +20,13 @@ Product repositories remain separate. Wally does not vendor product application 
 - `pi/github-webhook.py`, `pi/github-review/`, and `pi/pr-review/`: signed GitHub webhook intake, bounded review execution, proof-of-work, and review writeback.
 - `operations/agent-work/`: nightly supervisor, workers, watchdog, evidence lifecycle, summaries, tests, and systemd templates.
 - `pi/extensions/` and `pi/skills/`: Pi runtime extensions and the operational skills directly used by retained control-plane capabilities.
+  - Extensions include bounded Bash timeouts, read-only database access, entity memory, curated memory, repository knowledge-graph links, local VNC/tmux terminal opening, and web tools.
+  - Skills include credential-broker operation, GitHub/issue workflows, private-memory sync, Signal group enrollment, rollback-safe service releases, supervision, and the retained design/development toolkits.
+  - Packaged `.skill` artifacts and generated `dist/` output remain excluded; source, references, tests, and licenses are retained instead.
+  - The former local `goal.ts` helper is intentionally absent. Normal interactive installations use the pinned public `@narumitw/pi-goal@0.52.1` package; managed-worker allowlists may exclude global packages.
 - `components/op-auth-broker/`: caller-allowlisted, memory-only 1Password credential broker and client.
+
+**Export inventory (2026-09-12):** every installed extension and skill source path is represented after excluding generated `dist/`, packaged `.skill` files, caches, and runtime state. Deployment-specific vault names and host paths remain parameterized or sanitized where needed; this is source parity, not byte-for-byte host mirroring.
 - `operations/systemd/`, `operations/cron/`, and `operations/scripts/`: retained service, schedule, and glue definitions for the control plane and entity-memory/private-memory integration.
 
 ## Current deployment assumptions

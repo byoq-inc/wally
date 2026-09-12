@@ -56,6 +56,7 @@ rules = {
     ),
     "email address": re.compile(rb"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
     "E.164 phone": re.compile(rb"(?<![A-Za-z0-9])\+[1-9][0-9]{7,14}(?![0-9])"),
+    "long signed channel identifier": re.compile(rb"(?<![0-9])-[0-9]{10,}(?![0-9])"),
 }
 allowed_email_domains = {b"example.com", b"example.invalid"}
 
