@@ -23,6 +23,49 @@ Product repositories remain separate. Wally does not vendor product application 
 - `components/op-auth-broker/`: caller-allowlisted, memory-only 1Password credential broker and client.
 - `operations/systemd/`, `operations/cron/`, and `operations/scripts/`: retained service, schedule, and glue definitions for the control plane and entity-memory/private-memory integration.
 
+## Current deployment assumptions
+
+_Last reviewed: 2026-09-12._ These are deployment-layer contracts, not guaranteed Pi core features. Historical success, process startup, HTTP 200, or message acknowledgement does not prove that the current user path works.
+
+### Sessions, routing, and lifecycle
+
+- A conversation thread maps to a logical Pi session; an unquoted message may begin a concurrent thread, while a confirmed quoted reply continues the associated thread.
+- Prefix and participant-authorization rules are conversation policy and must be resolved before work starts.
+- Logical identity may outlive a physical worker. Dead workers, RPC timeouts, corrupt sessions, and startup failures require bounded retry-or-replacement policy rather than blind retries.
+- User-visible success requires confirmed delivery on the intended route, not merely transport acceptance or worker startup.
+- Detached workers require durable ownership, generation, PID/start identity, lease or heartbeat, exact artifact inventory, restart-safe reconciliation, archival, and identity-scoped cleanup proof.
+- Process counts are not session counts. Validate exact process, socket, registry, and start-time identities.
+- Dashboard-registration failure should produce sanitized diagnostics and bounded reconciliation rather than silently discarding viable work.
+
+### Isolation, extensions, and memory
+
+- Per-conversation vaults are logical application separation, not an OS security boundary, when workers share a privileged host account.
+- Authorization must be enforced during routing and retrieval; a group or vault label alone is not access control.
+- Managed workers should disable extension auto-discovery and pin allowlisted extensions by expected path, hash, size, ownership, mode, and symlink behavior. These checks do not sandbox extension code.
+- Curated memory, summaries, and optional instructions are distinct from raw sessions, transcripts, logs, indexes, caches, and credentials.
+- Fresh sessions should load only vault-authorized memory. Global identity resolution must not imply cross-vault fact visibility.
+- Memory curation should audit the full durable corpus for contradictions, stale counts, ambiguous scope, and superseded claims rather than only appending recent events.
+- Saved history is not assumed to be automatically searched or injected unless a retrieval component proves that behavior.
+
+### Proof, deployment, and observability
+
+- Narrated success is not evidence. Completion requires machine-verifiable artifacts and validation commands.
+- Releases should be immutable and hash-manifested with drift checks, serialized activation, exact rollback, candidate and rollback cold starts, focused regressions, broader checks, and exact fresh-session user-path canaries.
+- Resumed sessions cannot substitute for fresh-session acceptance because they can mask broken creation or enrollment.
+- Root-launched services must explicitly set and cold-start required environment such as `HOME` and `PATH`.
+- On occupied hosts, installers must preserve existing workloads, routes, and ports instead of restarting shared infrastructure to claim success.
+- Normal telemetry should expose privacy-safe status, timing, tool names, ordered actions, failures, and resource duration without prompts, arguments, results, credentials, or internal session identifiers.
+- Unredacted debug output requires explicit authentication, authorization, audit, retention, and reveal policy.
+
+### Providers, subagents, and unresolved decisions
+
+- Provider credentials, subscriptions, credits, and model availability are provider-specific and do not transfer implicitly.
+- Per-thread model selection requires explicit authorization and exact-route validation.
+- Example subagent support is not automatically production-safe; adoption requires lifecycle ownership, cancellation, resource limits, environment isolation, nested-launch controls, supervision, proof integration, and zero-residue checks.
+- Retry boundaries, failed-canary rollback, automatic-repair gates, lifecycle ownership for every launcher, provenance-aware identity retrieval, recurring browser/messaging canaries, sensitive-debug policy, and authorized model selection remain explicit unresolved decisions—not defaults.
+
+When an assumption changes, update this section, update any persisted policy fingerprint, add a focused contract test, run broader checks, validate the exact deployed user path, and record rollback criteria. Until those gates pass, describe the change as proposed, partial, or unconfirmed.
+
 ## Secrets and fail-closed behavior
 
 | Capability | Required names and least scope | Injection and validation | Missing/invalid behavior |
