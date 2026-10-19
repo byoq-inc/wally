@@ -6,9 +6,47 @@ This is base infrastructure, not a deployed assistant or a Pi Durable port. No r
 
 Private Ubuntu 24.04 VM (2 vCPU / 8 GiB default), separate 128 GiB state disk, SSH through Standard Bastion, explicit NAT egress, managed identity, RBAC Key Vault, firewall-restricted artifact storage, and daily VM backups retained for 14 days. The data disk, artifact account and backup vault have destroy protection. NAT and Bastion have continuous charges; obtain a regional cost estimate and quota approval before apply. This is a single-host design, not HA.
 
-Storage and Key Vault use public service endpoints restricted to the host subnet, not private endpoints. VM inbound traffic is denied except SSH from Bastion. Outbound traffic is allowed for model providers, Signal and package retrieval. A future worker subnet must not inherit host secret access. No runtime RBAC grants or secrets are installed: grant only specific secret/container scopes after approving the integrations. Do not give the assistant subscription-level access.
+Storage and Key Vault use public service endpoints restricted to the host subnet, not private endpoints. VM inbound traffic is denied except SSH from Bastion. Outbound traffic is broadly allowed, including model providers, Signal and package retrieval; there is no domain allowlist. A future worker subnet must not inherit host secret access. No host secret-access grants or secret values are installed. Optional workers receive only registry pull and their own capability-container data access; approve any further integration grants separately. Do not give the assistant subscription-level access.
 
-No Container Apps jobs, registry, log collection, model deployment or Pi Durable runtime is provisioned yet. These require a reviewed runtime/job contract and budget. Pi Durable supports one process owner per storage. Do not mount its SQLite database in multiple replicas. Its documented default SQLite synchronous=NORMAL protects process crashes, not necessarily the newest commits after host failure. Qualify stronger durability and application-consistent backups before cutover.
+The optional worker plane provides ACR, an internal Container Apps environment and manual-only jobs with per-capability identities. It is disabled by default until images and adapters are approved. Azure Monitor provides a CPU alert; notification delivery requires approved action-group IDs. Raw log collection, model deployment and the Pi Durable runtime remain unconfigured. Pi Durable supports one process owner per storage. Do not mount its SQLite database in multiple replicas. Its documented default SQLite synchronous=NORMAL protects process crashes, not necessarily the newest commits after host failure. Qualify stronger durability and application-consistent backups before cutover.
+
+## Feature map and organization
+
+This maps the portable source in this repository, not a fresh audit of all live host services. File organization shares one OpenTofu root/state and preserves existing resource addresses; no state moves are required for the split.
+
+- `versions.tf`, `variables.tf`, `main.tf`, `outputs.tf`: provider lock, common inputs, resource group and shared outputs.
+- `network.tf`: host VNet, subnet isolation, Bastion and explicit NAT egress.
+- `host.tf`: single-owner assistant VM and persistent state disk.
+- `identity.tf`: host-only Key Vault network boundary. Keep the caller-allowlisted `components/op-auth-broker/` for 1Password integrations; Key Vault is not a replacement for broker authorization.
+- `storage.tf`, `artifacts.tf`: protected storage account and private capability containers. No memory data is uploaded by OpenTofu.
+- `workers.tf`: optional image registry, isolated execution network, per-job managed identities, registry pull and container-scoped artifact grants.
+- `monitoring.tf`: privacy-safe host CPU metric alert, with optional existing notification action groups.
+- `backup.tf`: VM backup policy and separate protected recovery vault.
+
+Feature-to-resource mapping:
+
+- Signal routing (`pi/signal-bridge/`): host VM plus persistent Signal state. Keep destination binding, allowlists, delivery reconciliation and a single receiver. No public inbound endpoint is needed for Signal. Setup and end-to-end delivery remain runtime work.
+- Agent conversations and tools (`pi/extensions/`, `pi/skills/`): host VM and per-conversation workspaces on the state disk. Pi Durable is the proposed replacement runtime, not installed by these resources. Durable checkpoints stay on single-owner local SQLite; do not put the live SQLite database on Blob or share it across replicas.
+- Curated memory and entity indexing (`operations/cron/pi-memory-obsidian-sync`, `operations/systemd/pi-entity-memory-nightly.*`): load memory from its authorized GitHub repository onto the state disk. Indexing can later use the `memory-index` job and its private artifact container. Conversation access checks and reviewed Git writeback remain application responsibilities.
+- GitHub intake (`pi/github-webhook.py`, `operations/systemd/github-webhook.service`): host VM. Retain signed webhook validation and an explicitly configured authenticated tunnel to the local receiver. No public VM port, DNS record, TLS frontend or tunnel credential is installed here; incoming GitHub events remain blocked until this routing is configured and tested.
+- PR review (`pi/github-review/`, `pi/pr-review/`, `operations/systemd/pr-orchestrator.service`): `pr-review` Container Apps Job is the target for finite isolated checks. Runtime must adapt current subprocess/container launchers and obtain approved repository-scoped GitHub App credentials. No automatic webhook-to-job dispatch exists yet.
+- Nightly supervisor, watchdog and summaries (`operations/agent-work/`, `operations/systemd/agent-work-*`): initially host services/timers; finite approved workloads may use `nightly` jobs. Do not run host and cloud schedules concurrently. The new jobs have no schedules and no automatic retries.
+- Proof-of-work and verification (`pi/proof-of-work/`, repository validation scripts): `proof-receipts` artifact container and optional `verification` job. Artifact publication and receipt validation still need an adapter; an exit status alone does not establish user-visible success.
+- Attachments and reports: private `attachments` and `nightly` containers. No anonymous access or upload/delivery integration is enabled. These containers do not authorize new screenshot capture or cross-chat delivery.
+- Secret access and model providers: managed identities for Azure, existing scoped broker for external credentials. No subscription-wide grants, model API keys, provider subscription or model deployment is created. Model access must be separately qualified.
+- Operational alerts: Azure Monitor CPU alert plus existing application incident integrations. CPU health is not agent liveness, message delivery or backup recovery. Disk capacity, scheduler heartbeat, failed-job metrics and end-to-end canaries remain runtime monitoring work. Empty action-group input means no notification recipient.
+- Recovery: persistent disk and daily VM backups. Test application-consistent restore to an isolated host; never start a restored Signal identity alongside the original receiver.
+- Product scraping/replication and Temporal: stay outside Wally's infrastructure root and remain unchanged.
+
+## Optional worker rollout
+
+1. Review cost and quota, then provision with `enable_worker_plane = true` and `worker_jobs = {}`. This allows publishing images before declaring jobs.
+2. Build and scan capability images from reviewed source. An operator/CI identity needs scoped ACR push permission; the host and jobs do not receive push or deployment permissions here.
+3. Declare only approved jobs using the typed `worker_jobs` map. Allowed names are `pr-review`, `nightly`, `memory-index`, and `verification`. Each requires an image repository and `sha256:` digest. CPU/memory pairs and a 60-second to 24-hour timeout are validated.
+4. Plan and review again. Jobs are manual-only, with one replica per execution and zero platform retries. This does NOT prevent two independently started executions: the runtime adapter must enforce ownership, stable launch keys, reconciliation, cancellation and workspace exclusion.
+5. Qualify each image with synthetic data before granting launch access. Job identities can pull images and read/write only their capability's artifact container. They receive no host Key Vault access, GitHub credentials or broad storage grants. Capability containers are not a tenant/vault isolation boundary; add per-conversation authorization in the adapter.
+
+ACR Basic uses an authenticated public registry endpoint; worker ingress is private, and worker egress uses NAT. Raw container console log collection is disabled. Sanitized status/metrics instrumentation is required before production activation. Container Apps Jobs do not provide a persistent interactive workspace or privileged Docker-in-Docker: keep those workloads on dedicated worker VMs until a reviewed backend is implemented.
 
 ## Review and provision (operator only)
 

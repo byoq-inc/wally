@@ -6,7 +6,7 @@ Product repositories remain separate. Wally does not vendor product application 
 
 ## Azure foundation
 
-See [Azure provisioning and GitHub memory loading](infra/azure/README.md) for the OpenTofu base infrastructure, memory repository setup, and cutover gates. This does not deploy Pi Durable or move live Signal state.
+See [Azure provisioning and GitHub memory loading](infra/azure/README.md) for the current feature-to-Azure map, organized OpenTofu infrastructure, optional manual container jobs, memory repository setup, and cutover gates. This does not deploy Pi Durable or move live Signal state.
 
 ## Setup and recovery
 
