@@ -21,18 +21,16 @@ No Container Apps jobs, registry, log collection, model deployment or Pi Durable
 7. Inspect the LUN 0 disk by Azure resource ID and serial. Format only after confirming it is the newly created empty disk. Mount by UUID at `/srv/wally` with restrictive ownership. Do not automatically format disks, and do not start a runtime if the mount is absent.
 8. Create an unprivileged runtime user. Install reviewed, pinned dependencies and Wally source. Keep credentials host-owned and outside the checkout. Adapt existing service templates; do not copy this server's units blindly.
 
-## Curated data migration
+## Load memory from GitHub
 
-The migration script is intentionally narrower than a server backup. It transfers only explicitly selected UTF-8 `MEMORY.md`, `USER.md`, `SUMMARY.md`, and `INSTRUCTIONS.md` files, preserving relative vault paths and bytes. It rejects symlinks, traversal, duplicates, oversized bundles, hash mismatches and existing destinations. Total decoded size is limited to 16 MiB. It does not inspect prose for secrets: review every selected file first. Bundles contain private plaintext (base64 is not encryption).
+Load curated memory from the existing authorized private GitHub memory repository. No host-to-host memory migration or export/import bundle is needed. Keep private memory separate from this Wally source repository.
 
-1. Pause curation/writers for the selected source files, or export a consistent offline snapshot. Source directories must be trusted and not concurrently modified.
-2. Create a private newline-separated allowlist outside Git, e.g. `groups/example/MEMORY.md`. Include only vaults explicitly approved for the new host. Do not flatten paths or broaden retrieval permissions.
-3. Export: `python3 scripts/migrate-curated-memory.py export /private/vault-root /private/allowlist /private/memory-bundle.json`.
-4. Record `sha256sum /private/memory-bundle.json`. Copy over authenticated SSH through Bastion into a mode-0700 staging directory. Compare the whole-bundle hash over a trusted channel on the target; embedded hashes alone do not authenticate a bundle.
-5. Import: `python3 scripts/migrate-curated-memory.py import /private/memory-bundle.json /srv/wally/import-candidate`. The destination must not exist and its parent must be private and writable only by the operator. An interrupted filesystem import may leave a partial candidate; never activate it. Preserve it for inspection and retry into a new candidate path.
-6. Check exact files and permissions against the approved allowlist. Run retrieval-isolation checks using synthetic sessions before placing the candidate into service. Retain the old source for rollback. Securely manage staging-file retention.
+1. Configure the exact approved memory repository and revision on the target host. Confirm required source updates are committed there before loading it; do not silently discard uncommitted source changes.
+2. Use the approved GitHub App with a dynamically minted, repository-scoped token. Read-only contents access is sufficient for initial loading. Do not put tokens in Git remotes, command arguments, logs or OpenTofu state.
+3. Clone into a new private directory on the mounted state disk as the unprivileged runtime user. Record the checked-out commit. Preserve vault paths, dating/history and per-conversation access boundaries.
+4. Configure the memory loader and run synthetic retrieval-isolation checks before enabling real conversations. Loading repository files alone does not prove correct retrieval or authorization.
 
-Raw sessions, SQLite databases, Signal linked-device identity, provider credentials, browser profiles, logs, repositories and running tasks are not migrated by this script. Old Pi sessions are not Pi Durable task checkpoints. Reconnect credentials through the approved broker/Key Vault path. For the pilot, link a separate Signal identity rather than copying a live identity. Any later identity migration requires quiescing the old receiver and a separate cutover plan; never operate cloned Signal state concurrently.
+Raw sessions and running tasks are not restored by cloning memory. Old Pi sessions are not Pi Durable task checkpoints. Reconnect credentials through the approved broker/Key Vault path. For the pilot, link a separate Signal identity rather than copying a live identity. Any later identity migration requires quiescing the old receiver and a separate cutover plan; never operate cloned Signal state concurrently.
 
 ## Release gates and rollback
 
@@ -40,4 +38,4 @@ Before accepting real traffic: test fresh-session model/tool use, task recovery 
 
 Keep the original host unchanged until explicit cutover approval. Rollback stops the new receiver before restoring the old route; it does not replay uncertain external writes or merge divergent runtime databases automatically. Never destroy source state as part of migration.
 
-Offline checks: `python3 -m unittest discover -s tests -p test_azure_migration.py`, `tofu -chdir=infra/azure fmt -check`, and `tofu -chdir=infra/azure validate` after init.
+Offline checks: `./tests/check-export.sh`, `tofu -chdir=infra/azure fmt -check -recursive`, `tofu -chdir=infra/azure validate`, and `tofu -chdir=infra/azure test` after init.

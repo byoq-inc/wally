@@ -71,7 +71,7 @@ skills = sorted(Path('pi/skills').glob('*/SKILL.md'))
 extension_docs = sorted(Path('pi/extensions').glob('*/README.md'))
 allowed_markdown = {
     PurePosixPath('README.md'),
-    PurePosixPath('infra/azure/README.md'),  # Reviewed provisioning/migration runbook.
+    PurePosixPath('infra/azure/README.md'),  # Reviewed provisioning/memory-loading runbook.
     *(PurePosixPath(p) for p in skills),
     *(PurePosixPath(p) for p in extension_docs),
 }

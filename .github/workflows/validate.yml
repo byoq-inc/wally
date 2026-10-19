@@ -14,8 +14,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate export
         run: ./tests/check-export.sh
-      - name: Test curated migration
-        run: python3 -m unittest discover -s tests -p test_azure_migration.py
 
   azure-validation:
     runs-on: ubuntu-latest
