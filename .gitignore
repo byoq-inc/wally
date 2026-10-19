@@ -18,6 +18,9 @@
 !scripts/**
 !tests/
 !tests/**
+!infra/
+!infra/azure/
+!infra/azure/**
 !.github/
 !.github/workflows/
 !.github/workflows/validate.yml

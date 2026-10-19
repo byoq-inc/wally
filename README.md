@@ -4,6 +4,10 @@ Wally contains the portable operational source for the Pi control plane: Pi exte
 
 Product repositories remain separate. Wally does not vendor product application source, worktrees, private memory repositories, or their data.
 
+## Azure foundation
+
+See [Azure provisioning and curated-memory migration](infra/azure/README.md) for the OpenTofu base infrastructure, offline transfer tool, and cutover gates. This does not deploy Pi Durable or move live Signal state.
+
 ## Setup and recovery
 
 1. Run `./scripts/bootstrap.sh --check`, then `./tests/check-export.sh`.

@@ -1,0 +1,6 @@
+subscription_id = "00000000-0000-0000-0000-000000000000"
+location        = "eastus"
+name            = "wally"
+ssh_public_key  = "ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY"
+vm_size         = "Standard_D2s_v5"
+data_disk_gb    = 128

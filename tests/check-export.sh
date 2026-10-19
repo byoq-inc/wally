@@ -71,6 +71,7 @@ skills = sorted(Path('pi/skills').glob('*/SKILL.md'))
 extension_docs = sorted(Path('pi/extensions').glob('*/README.md'))
 allowed_markdown = {
     PurePosixPath('README.md'),
+    PurePosixPath('infra/azure/README.md'),  # Reviewed provisioning/migration runbook.
     *(PurePosixPath(p) for p in skills),
     *(PurePosixPath(p) for p in extension_docs),
 }
@@ -97,7 +98,7 @@ for path in tracked:
         errors.append(f'{path}: Markdown is not an agent-consumed skill dependency')
 
 # Check ordinary repository-local Markdown links and file:// references.
-sources = [Path('README.md'), *skills, *extension_docs]
+sources = [Path('README.md'), Path('infra/azure/README.md'), *skills, *extension_docs]
 for source in sources:
     try:
         text = source.read_text()
