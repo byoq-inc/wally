@@ -86,6 +86,61 @@ run "secure_base" {
   }
 }
 
+run "lab_disabled" {
+  command = plan
+  assert {
+    condition     = length(azurerm_resource_group.lab) == 0 && length(azurerm_container_app.lab) == 0
+    error_message = "Lab must be opt-in."
+  }
+}
+
+run "lab_bootstrap" {
+  command = plan
+  variables { enable_lab = true }
+  assert {
+    condition     = length(azurerm_container_registry.lab) == 1 && length(azurerm_container_app.lab) == 0
+    error_message = "Bootstrap must not launch an image."
+  }
+}
+
+run "singleton_lab" {
+  command = plan
+  variables {
+    lab_image = {
+      repository = "lab/web"
+      digest     = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+  assert {
+    condition     = length(azurerm_container_app.lab) == 1 && length(azurerm_container_app_job.worker) == 0
+    error_message = "Lab must provision only one service, no extra jobs."
+  }
+  assert {
+    condition     = azurerm_container_app.lab[0].template[0].max_replicas == 1 && azurerm_container_app.lab[0].revision_mode == "Single" && length(azurerm_container_app.lab[0].template[0].container) == 1 && azurerm_container_app.lab[0].template[0].container[0].cpu == 0.5 && azurerm_container_app.lab[0].template[0].container[0].memory == "1Gi"
+    error_message = "Singleton lab size must remain fixed."
+  }
+  assert {
+    condition     = !azurerm_container_app.lab[0].ingress[0].external_enabled && azurerm_container_app_environment.lab[0].public_network_access == "Disabled" && azurerm_container_app_environment.lab[0].logs_destination == ""
+    error_message = "Lab must not expose public ingress or enable raw logs."
+  }
+  assert {
+    condition     = azurerm_role_assignment.lab_pull[0].scope == azurerm_container_registry.lab[0].id && azurerm_role_assignment.lab_pull[0].role_definition_name == "AcrPull" && length(azurerm_container_app.lab[0].template[0].volume) == 0
+    error_message = "Lab must only receive registry pull access and no mounted memory."
+  }
+}
+
+run "reject_lab_tag" {
+  command = plan
+  variables { lab_image = { repository = "lab/web", digest = "latest" } }
+  expect_failures = [var.lab_image]
+}
+
+run "reject_lab_external_repository" {
+  command = plan
+  variables { lab_image = { repository = "https://external.example/web", digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }
+  expect_failures = [var.lab_image]
+}
+
 run "registry_bootstrap" {
   command = plan
   variables { enable_worker_plane = true }

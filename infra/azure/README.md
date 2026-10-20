@@ -1,6 +1,6 @@
 # Azure assistant foundation
 
-This is base infrastructure, not a deployed assistant or a Pi Durable port. No runtime services start automatically. Existing Signal traffic and production Temporal pipelines remain unchanged.
+This is base infrastructure, not a deployed assistant or a Pi Durable port. No assistant runtime starts automatically. Setting `lab_image` explicitly starts the optional lab workload on apply. Existing Signal traffic and production Temporal pipelines remain unchanged.
 
 ## Resources and boundaries
 
@@ -9,6 +9,20 @@ Private Ubuntu 24.04 VM (2 vCPU / 8 GiB default), separate 128 GiB state disk, S
 Storage and Key Vault use public service endpoints restricted to the host subnet, not private endpoints. VM inbound traffic is denied except SSH from Bastion. Outbound traffic is broadly allowed, including model providers, Signal and package retrieval; there is no domain allowlist. A future worker subnet must not inherit host secret access. No host secret-access grants or secret values are installed. Optional workers receive only registry pull and their own capability-container data access; approve any further integration grants separately. Do not give the assistant subscription-level access.
 
 The optional worker plane provides ACR, an internal Container Apps environment and manual-only jobs with per-capability identities. It is disabled by default until images and adapters are approved. Azure Monitor provides a CPU alert; notification delivery requires approved action-group IDs. Raw log collection, model deployment and the Pi Durable runtime remain unconfigured. Pi Durable supports one process owner per storage. Do not mount its SQLite database in multiple replicas. Its documented default SQLite synchronous=NORMAL protects process crashes, not necessarily the newest commits after host failure. Qualify stronger durability and application-consistent backups before cutover.
+
+## Singleton experiment lab
+
+`lab.tf` replaces the proposed multi-service experiment lab with one operator-provisioned Container App: one container, 0.5 vCPU, 1 GiB, maximum one replica per revision, single-revision mode. There are no size/count inputs, additional test jobs, volume mounts, secrets, or assistant management-plane role grants. Existing optional capability workers are separate and remain disabled by default; they are not Pi-created lab services.
+
+The lab has its own resource group, VNet (no peering to the assistant), environment, registry and pull-only identity. Ingress is environment-internal on port 8080; no host-to-lab routing is provisioned. The authenticated Basic registry is publicly reachable; outbound internet is not filtered. This is not a complete egress sandbox. Memory and host secrets are neither mounted nor granted to the lab.
+
+Bootstrap with `enable_lab = true`, publish a reviewed image through operator credentials, then set `lab_image = { repository = "lab/web", digest = "sha256:<64 lowercase hex characters>" }`. Only the lab registry is used. No image is built or published by OpenTofu. Leave `lab_image = null` to provision no service.
+
+Pi receives no `containerApps/write`, create, resize, identity, or deployment permissions. Image updates currently require operator-reviewed OpenTofu. Autonomous image updates/restarts need a separately qualified constrained interface; that runtime interface is **not implemented** here. Do not grant broad app-write access as a shortcut.
+
+Single revision mode and `max_replicas = 1` do **not** guarantee zero rollout overlap. To preserve a strict one-running-container ceiling, operators must stop/deactivate the existing revision and confirm zero running replicas before changing the image. Accept downtime. Automated stop/verify/update and Azure-side rollout behavior remain unqualified; these plans do not prove a runtime aggregate cap during platform replacement.
+
+No spending ledger or budget shutdown system is included. No Azure provisioning is performed by this PR. Before activation, qualify image startup, private access, effective inherited RBAC, isolation, and stop/update behavior in Azure.
 
 ## Feature map and organization
 
