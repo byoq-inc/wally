@@ -11,7 +11,7 @@ resource "azurerm_storage_account" "artifacts" {
   network_rules {
     default_action             = "Deny"
     bypass                     = ["None"]
-    virtual_network_subnet_ids = concat([azurerm_subnet.host.id], azurerm_subnet.workers[*].id)
+    virtual_network_subnet_ids = [azurerm_subnet.host.id]
   }
   blob_properties {
     versioning_enabled = true

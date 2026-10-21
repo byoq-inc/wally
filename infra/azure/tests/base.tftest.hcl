@@ -5,21 +5,6 @@ mock_provider "azurerm" {
   mock_resource "azurerm_storage_container" {
     defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test/providers/Microsoft.Storage/storageAccounts/test/blobServices/default/containers/test" }
   }
-  mock_resource "azurerm_container_registry" {
-    defaults = {
-      id           = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test/providers/Microsoft.ContainerRegistry/registries/test"
-      login_server = "test.azurecr.io"
-    }
-  }
-  mock_resource "azurerm_container_app_environment" {
-    defaults = { id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test/providers/Microsoft.App/managedEnvironments/test" }
-  }
-  mock_resource "azurerm_user_assigned_identity" {
-    defaults = {
-      id           = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test/providers/Microsoft.ManagedIdentity/userAssignedIdentities/test"
-      principal_id = "00000000-0000-0000-0000-000000000001"
-    }
-  }
   mock_data "azurerm_client_config" {
     defaults = { tenant_id = "00000000-0000-0000-0000-000000000000" }
   }
@@ -50,9 +35,8 @@ mock_provider "azurerm" {
 }
 
 variables {
-  lab_tailscale_auth_secret_id = "https://lab-enrollment.vault.azure.net/secrets/tailscale/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  subscription_id              = "00000000-0000-0000-0000-000000000000"
-  ssh_public_key               = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  subscription_id = "00000000-0000-0000-0000-000000000000"
+  ssh_public_key  = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 }
 
 run "secure_base" {
@@ -74,163 +58,27 @@ run "secure_base" {
     error_message = "Key Vault must retain purge protection and RBAC."
   }
   assert {
-    condition     = azurerm_managed_disk.data.disk_size_gb >= 128
-    error_message = "State disk is undersized."
+    condition     = azurerm_managed_disk.data.disk_size_gb >= 128 && azurerm_virtual_machine_data_disk_attachment.data.caching == "None"
+    error_message = "State disk must be retained with caching None."
   }
+}
+
+run "minimal_private_artifacts" {
+  command = plan
   assert {
-    condition     = length(azurerm_container_app_job.worker) == 0 && length(azurerm_container_app_environment.workers) == 0
-    error_message = "Default must not activate the worker plane."
+    condition     = toset(keys(azurerm_storage_container.capability)) == toset(["attachments", "proof-receipts"])
+    error_message = "Only initial-port artifact containers belong in this root."
   }
   assert {
     condition     = alltrue([for c in azurerm_storage_container.capability : c.container_access_type == "private"])
-    error_message = "All capability artifacts must remain private."
-  }
-}
-
-run "lab_disabled" {
-  command = plan
-  assert {
-    condition     = length(azurerm_resource_group.lab) == 0 && length(azurerm_container_app.lab) == 0
-    error_message = "Lab must be opt-in."
-  }
-}
-
-run "lab_bootstrap" {
-  command = plan
-  variables { enable_lab = true }
-  assert {
-    condition     = length(azurerm_container_registry.lab) == 1 && length(azurerm_container_app.lab) == 0
-    error_message = "Bootstrap must not launch an image."
-  }
-}
-
-run "singleton_lab" {
-  command = plan
-  variables {
-    lab_image = {
-      repository = "lab/web"
-      digest     = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    }
+    error_message = "Artifacts must remain private."
   }
   assert {
-    condition     = length(azurerm_container_app.lab) == 1 && length(azurerm_container_app_job.worker) == 0
-    error_message = "Lab must provision only one service, no extra jobs."
-  }
-  assert {
-    condition     = azurerm_container_app.lab[0].template[0].max_replicas == 1 && azurerm_container_app.lab[0].revision_mode == "Single" && length(azurerm_container_app.lab[0].template[0].container) == 1 && azurerm_container_app.lab[0].template[0].container[0].cpu == 0.5 && azurerm_container_app.lab[0].template[0].container[0].memory == "1Gi"
-    error_message = "Singleton lab size must remain fixed."
-  }
-  assert {
-    condition     = azurerm_container_app.lab[0].template[0].min_replicas == 1 && azurerm_container_app.lab[0].template[0].container[0].command[0] == "/usr/local/bin/lab-tailscale-entrypoint" && one(azurerm_container_app.lab[0].secret).key_vault_secret_id == var.lab_tailscale_auth_secret_id
-    error_message = "Tailnet requires an awake replica, the reviewed entrypoint and Key Vault reference."
-  }
-  assert {
-    condition     = length(azurerm_container_app.lab[0].ingress) == 0 && azurerm_container_app_environment.lab[0].public_network_access == "Disabled" && azurerm_container_app_environment.lab[0].logs_destination == ""
-    error_message = "Lab must not expose public ingress or enable raw logs."
-  }
-  assert {
-    condition     = azurerm_role_assignment.lab_pull[0].scope == azurerm_container_registry.lab[0].id && azurerm_role_assignment.lab_pull[0].role_definition_name == "AcrPull" && length(azurerm_container_app.lab[0].template[0].volume) == 0
-    error_message = "Lab must only receive registry pull access and no mounted memory."
-  }
-}
-
-run "reject_lab_without_tailnet_enrollment" {
-  command = plan
-  variables {
-    lab_tailscale_auth_secret_id = null
-    lab_image                    = { repository = "lab/web", digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
-  }
-  expect_failures = [azurerm_container_app.lab]
-}
-
-run "reject_raw_tailnet_key" {
-  command = plan
-  variables { lab_tailscale_auth_secret_id = "not-a-secret-uri" }
-  expect_failures = [var.lab_tailscale_auth_secret_id]
-}
-
-run "reject_lab_tag" {
-  command = plan
-  variables { lab_image = { repository = "lab/web", digest = "latest" } }
-  expect_failures = [var.lab_image]
-}
-
-run "reject_lab_external_repository" {
-  command = plan
-  variables { lab_image = { repository = "https://external.example/web", digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }
-  expect_failures = [var.lab_image]
-}
-
-run "registry_bootstrap" {
-  command = plan
-  variables { enable_worker_plane = true }
-  assert {
-    condition     = length(azurerm_container_registry.workers) == 1 && length(azurerm_container_app_job.worker) == 0
-    error_message = "Must support provisioning the registry before publishing images or defining jobs."
-  }
-}
-
-run "manual_worker" {
-  command = plan
-  variables {
-    worker_jobs = {
-      verification = {
-        image_repository = "wally/verification"
-        image_digest     = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      }
-    }
-  }
-  assert {
-    condition     = azurerm_container_app_job.worker["verification"].replica_retry_limit == 0 && length(azurerm_container_app_job.worker["verification"].manual_trigger_config) == 1
-    error_message = "Job must be manual-only without blind retries."
-  }
-  assert {
-    condition     = azurerm_container_app_environment.workers[0].public_network_access == "Disabled" && azurerm_container_app_environment.workers[0].logs_destination == ""
-    error_message = "Workers must not expose ingress or collect raw output by default."
-  }
-  assert {
-    condition     = azurerm_role_assignment.worker_artifacts["verification"].scope == azurerm_storage_container.capability["verification"].id
-    error_message = "Worker artifact role must be container-scoped."
+    condition     = azurerm_storage_account.artifacts.network_rules[0].default_action == "Deny" && toset(azurerm_storage_account.artifacts.network_rules[0].virtual_network_subnet_ids) == toset([azurerm_subnet.host.id])
+    error_message = "Only the host subnet may reach artifact storage."
   }
   assert {
     condition     = length(azurerm_key_vault.main.network_acls[0].virtual_network_subnet_ids) == 1
-    error_message = "Workers must not inherit host Key Vault network access."
+    error_message = "Do not broaden the secret network boundary."
   }
-}
-
-run "reject_unpinned_image" {
-  command = plan
-  variables {
-    worker_jobs = {
-      verification = { image_repository = "wally/verification", image_digest = "latest" }
-    }
-  }
-  expect_failures = [var.worker_jobs]
-}
-
-run "reject_unbounded_worker" {
-  command = plan
-  variables {
-    worker_jobs = {
-      verification = {
-        image_repository = "wally/verification"
-        image_digest     = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        timeout_seconds  = 86401
-      }
-    }
-  }
-  expect_failures = [var.worker_jobs]
-}
-
-run "reject_unapproved_capability" {
-  command = plan
-  variables {
-    worker_jobs = {
-      arbitrary = {
-        image_repository = "wally/arbitrary"
-        image_digest     = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      }
-    }
-  }
-  expect_failures = [var.worker_jobs]
 }

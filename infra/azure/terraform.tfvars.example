@@ -5,18 +5,5 @@ ssh_public_key  = "ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY"
 vm_size         = "Standard_D2s_v5"
 data_disk_gb    = 128
 
-# Stage 1: enable registry/environment, publish reviewed images, then define jobs.
-enable_worker_plane   = false
-worker_jobs           = {}
+# Empty means no CPU alert notification recipient. Configure before production.
 alert_action_group_ids = []
-
-# Stage 2 example (replace digest with a real published image; do not use secrets):
-# worker_jobs = {
-#   verification = {
-#     image_repository = "wally/verification"
-#     image_digest     = "sha256:REPLACE_WITH_64_HEX_CHARACTERS"
-#     cpu              = 1
-#     memory           = "2Gi"
-#     timeout_seconds  = 3600
-#   }
-# }
