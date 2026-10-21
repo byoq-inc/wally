@@ -12,17 +12,32 @@ The optional worker plane provides ACR, an internal Container Apps environment a
 
 ## Singleton experiment lab
 
-`lab.tf` replaces the proposed multi-service experiment lab with one operator-provisioned Container App: one container, 0.5 vCPU, 1 GiB, maximum one replica per revision, single-revision mode. There are no size/count inputs, additional test jobs, volume mounts, secrets, or assistant management-plane role grants. Existing optional capability workers are separate and remain disabled by default; they are not Pi-created lab services.
+`lab.tf` replaces the proposed multi-service experiment lab with one operator-provisioned Container App: one container, 0.5 vCPU, 1 GiB, maximum one replica per revision, single-revision mode. There are no size/count inputs, additional test jobs, volume mounts, or assistant management-plane role grants. One dedicated Tailscale enrollment secret is referenced from Key Vault, never supplied as a secret value to OpenTofu. Existing optional capability workers are separate and remain disabled by default; they are not Pi-created lab services.
 
-The lab has its own resource group, VNet (no peering to the assistant), environment, registry and pull-only identity. Ingress is environment-internal on port 8080; no host-to-lab routing is provisioned. The authenticated Basic registry is publicly reachable; outbound internet is not filtered. This is not a complete egress sandbox. Memory and host secrets are neither mounted nor granted to the lab.
+The lab has its own resource group, VNet (no peering to the assistant), environment, registry and pull-only identity. Azure ingress is completely disabled, including environment-internal ingress. Tailscale Serve is the only intended application access path; no host-to-lab routing is provisioned. The authenticated Basic registry is publicly reachable; outbound internet is not filtered. This is not a complete egress sandbox. Memory and host secrets are neither mounted nor granted to the lab.
 
-Bootstrap with `enable_lab = true`, publish a reviewed image through operator credentials, then set `lab_image = { repository = "lab/web", digest = "sha256:<64 lowercase hex characters>" }`. Only the lab registry is used. No image is built or published by OpenTofu. Leave `lab_image = null` to provision no service.
+Bootstrap with `enable_lab = true`, publish a reviewed image through operator credentials, grant the lab identity read access to only a dedicated enrollment secret, then set `lab_tailscale_auth_secret_id` to its versioned Key Vault URI and `lab_image = { repository = "lab/web", digest = "sha256:<64 lowercase hex characters>" }`. Only the lab registry is used. No image is built or published by OpenTofu. Leave `lab_image = null` to provision no service.
 
 Pi receives no `containerApps/write`, create, resize, identity, or deployment permissions. Image updates currently require operator-reviewed OpenTofu. Autonomous image updates/restarts need a separately qualified constrained interface; that runtime interface is **not implemented** here. Do not grant broad app-write access as a shortcut.
 
 Single revision mode and `max_replicas = 1` do **not** guarantee zero rollout overlap. To preserve a strict one-running-container ceiling, operators must stop/deactivate the existing revision and confirm zero running replicas before changing the image. Accept downtime. Automated stop/verify/update and Azure-side rollout behavior remain unqualified; these plans do not prove a runtime aggregate cap during platform replacement.
 
 No spending ledger or budget shutdown system is included. No Azure provisioning is performed by this PR. Before activation, qualify image startup, private access, effective inherited RBAC, isolation, and stop/update behavior in Azure.
+
+### Tailscale image and activation contract
+
+Bake `lab-runtime/lab-tailscale-entrypoint` (executable) into `/usr/local/bin/`, and `lab-runtime/lab-serve.json` into `/etc/tailscale/`. The single image must include Bash, a pinned/reviewed Tailscale `containerboot` plus its required binaries, and the foreground application at `/usr/local/bin/lab-app`. The app must bind **only `127.0.0.1:8080`**. This avoids adding a sidecar or increasing the total 0.5 vCPU / 1 GiB allowance. OpenTofu selects this entrypoint; it does not build or verify image contents.
+
+Containerboot runs userspace networking (no privileged mode or TUN mount), establishes the outbound tailnet connection and serves HTTPS to loopback. Funnel is disabled in the supplied Serve config. One minimum replica is required because tailnet traffic cannot wake an app with no Azure ingress. This incurs continuous runtime cost. State is ephemeral; restarts require enrollment, and the DNS hostname can change after replacement.
+
+Before enabling the image, the operator must:
+
+1. Configure a dedicated lab tag and explicit least-privilege tailnet grants/ACLs for approved callers to TCP 443 only. Check the **whole** policy for broad existing grants. Deny lab-initiated access to other tailnet nodes; do not grant Funnel, route advertisement, exit-node or administrative capabilities. Enable tailnet HTTPS certificates. This PR does not change the tailnet policy.
+2. Put an expiring, reusable, tagged **ephemeral-device** enrollment key in a dedicated Key Vault secret (reuse supports replica restarts). Grant the exported `lab_identity_principal_id` secret-read access only to that secret and configure reachable vault networking. Do not reuse the assistant's secret vault or put the key in tfvars/state. No new secret-read RBAC is granted automatically. Rotate the referenced version before expiry.
+3. Build and publish the reviewed image with the files above. The wrapper removes the key from the app environment, but both processes share a container and identity: this is **not** a secret boundary against malicious app code. Use only trusted reviewed experiments; the enrollment key must convey only the restricted lab tag.
+4. Verify allowed tailnet HTTPS succeeds, an unauthorized tailnet caller fails, public/VNet direct access fails, Funnel is unavailable, loopback-only binding holds, restart enrollment works, and the app cannot reach other tailnet nodes. Verify stop-before-update behavior and image resource use too.
+
+Until these checks pass, Tailscale runtime access is unqualified. Missing enrollment configuration fails the infrastructure plan; failed enrollment has no Azure-ingress fallback. Reference: https://tailscale.com/kb/1282/docker and https://tailscale.com/kb/1312/serve .
 
 ## Feature map and organization
 

@@ -20,6 +20,15 @@ variable "lab_image" {
     error_message = "Use a registry-relative repository and a sha256 digest, never a tag or external registry URL."
   }
 }
+variable "lab_tailscale_auth_secret_id" {
+  description = "Versioned Key Vault secret URI holding a tagged, ephemeral Tailscale enrollment key. No secret value enters OpenTofu. Operator must grant the lab identity read access to this secret and configure vault networking."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.lab_tailscale_auth_secret_id == null ? true : can(regex("^https://[a-zA-Z0-9-]+\\.vault\\.azure\\.net/secrets/[a-zA-Z0-9-]+/[a-fA-F0-9]{32}$", var.lab_tailscale_auth_secret_id))
+    error_message = "Supply a versioned Azure Key Vault secret URI, not an auth key."
+  }
+}
 locals {
   lab_enabled = var.enable_lab || var.lab_image != null
 }
@@ -98,29 +107,70 @@ resource "azurerm_container_app" "lab" {
     server   = azurerm_container_registry.lab[0].login_server
     identity = azurerm_user_assigned_identity.lab[0].id
   }
+  dynamic "secret" {
+    for_each = var.lab_tailscale_auth_secret_id == null ? [] : [var.lab_tailscale_auth_secret_id]
+    content {
+      name                = "tailscale-auth"
+      key_vault_secret_id = secret.value
+      identity            = azurerm_user_assigned_identity.lab[0].id
+    }
+  }
+  lifecycle {
+    precondition {
+      condition     = var.lab_tailscale_auth_secret_id != null
+      error_message = "Lab activation requires a Tailscale enrollment secret reference."
+    }
+  }
   template {
-    min_replicas = 0
+    # No HTTP ingress exists to wake a zero-replica app on a tailnet request.
+    min_replicas = 1
     max_replicas = 1
     container {
-      name   = "lab"
-      image  = "${azurerm_container_registry.lab[0].login_server}/${var.lab_image.repository}@${var.lab_image.digest}"
-      cpu    = 0.5
-      memory = "1Gi"
+      name    = "lab"
+      image   = "${azurerm_container_registry.lab[0].login_server}/${var.lab_image.repository}@${var.lab_image.digest}"
+      cpu     = 0.5
+      memory  = "1Gi"
+      command = ["/usr/local/bin/lab-tailscale-entrypoint"]
+      env {
+        name        = "TS_AUTHKEY"
+        secret_name = "tailscale-auth"
+      }
+      env {
+        name  = "TS_USERSPACE"
+        value = "true"
+      }
+      env {
+        name  = "TS_STATE_DIR"
+        value = "/tmp/tailscale"
+      }
+      env {
+        name  = "TS_KUBE_SECRET"
+        value = ""
+      }
+      env {
+        name  = "TS_HOSTNAME"
+        value = "${var.name}-lab"
+      }
+      env {
+        name  = "TS_EXTRA_ARGS"
+        value = "--accept-routes=false"
+      }
+      env {
+        name  = "TS_SERVE_CONFIG"
+        value = "/etc/tailscale/lab-serve.json"
+      }
     }
   }
-  # Private ingress only; there is deliberately no peering to the assistant VNet.
-  ingress {
-    external_enabled = false
-    target_port      = 8080
-    traffic_weight {
-      latest_revision = true
-      percentage      = 100
-    }
-  }
+  # No Azure ingress, including environment-internal ingress. Access uses Serve
+  # over the outbound-established tailnet connection, never Tailscale Funnel.
   depends_on = [azurerm_role_assignment.lab_pull]
 }
 output "lab_registry" {
   value = local.lab_enabled ? azurerm_container_registry.lab[0].login_server : null
+}
+output "lab_identity_principal_id" {
+  description = "Operator grants this identity read access to only the dedicated enrollment secret before activating the image."
+  value       = local.lab_enabled ? azurerm_user_assigned_identity.lab[0].principal_id : null
 }
 output "lab_service_id" {
   value = var.lab_image != null ? azurerm_container_app.lab[0].id : null

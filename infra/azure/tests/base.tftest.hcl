@@ -50,8 +50,9 @@ mock_provider "azurerm" {
 }
 
 variables {
-  subscription_id = "00000000-0000-0000-0000-000000000000"
-  ssh_public_key  = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  lab_tailscale_auth_secret_id = "https://lab-enrollment.vault.azure.net/secrets/tailscale/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  subscription_id              = "00000000-0000-0000-0000-000000000000"
+  ssh_public_key               = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 }
 
 run "secure_base" {
@@ -120,13 +121,32 @@ run "singleton_lab" {
     error_message = "Singleton lab size must remain fixed."
   }
   assert {
-    condition     = !azurerm_container_app.lab[0].ingress[0].external_enabled && azurerm_container_app_environment.lab[0].public_network_access == "Disabled" && azurerm_container_app_environment.lab[0].logs_destination == ""
+    condition     = azurerm_container_app.lab[0].template[0].min_replicas == 1 && azurerm_container_app.lab[0].template[0].container[0].command[0] == "/usr/local/bin/lab-tailscale-entrypoint" && one(azurerm_container_app.lab[0].secret).key_vault_secret_id == var.lab_tailscale_auth_secret_id
+    error_message = "Tailnet requires an awake replica, the reviewed entrypoint and Key Vault reference."
+  }
+  assert {
+    condition     = length(azurerm_container_app.lab[0].ingress) == 0 && azurerm_container_app_environment.lab[0].public_network_access == "Disabled" && azurerm_container_app_environment.lab[0].logs_destination == ""
     error_message = "Lab must not expose public ingress or enable raw logs."
   }
   assert {
     condition     = azurerm_role_assignment.lab_pull[0].scope == azurerm_container_registry.lab[0].id && azurerm_role_assignment.lab_pull[0].role_definition_name == "AcrPull" && length(azurerm_container_app.lab[0].template[0].volume) == 0
     error_message = "Lab must only receive registry pull access and no mounted memory."
   }
+}
+
+run "reject_lab_without_tailnet_enrollment" {
+  command = plan
+  variables {
+    lab_tailscale_auth_secret_id = null
+    lab_image                    = { repository = "lab/web", digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+  }
+  expect_failures = [azurerm_container_app.lab]
+}
+
+run "reject_raw_tailnet_key" {
+  command = plan
+  variables { lab_tailscale_auth_secret_id = "not-a-secret-uri" }
+  expect_failures = [var.lab_tailscale_auth_secret_id]
 }
 
 run "reject_lab_tag" {
