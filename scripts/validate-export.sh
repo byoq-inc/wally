@@ -58,7 +58,17 @@ rules = {
     "E.164 phone": re.compile(rb"(?<![A-Za-z0-9])\+[1-9][0-9]{7,14}(?![0-9])"),
     "long signed channel identifier": re.compile(rb"(?<![0-9])-[0-9]{10,}(?![0-9])"),
 }
-allowed_email_domains = {b"example.com", b"example.invalid"}
+allowed_email_domains = {b"example.com", b"example.net", b"example.org", b"example.invalid"}
+# Exact synthetic fixture values, scoped to reviewed tests only. Never suppress a
+# rule for an entire file or permit arbitrary token-shaped values.
+synthetic_test_values = {
+    PurePosixPath("pi/extensions/agora-harness-learning/core.test.ts"): {
+        b"not-a-real-api-key-value", b"credential-from-existing-config",
+    },
+    PurePosixPath("pi/extensions/agora-harness-learning/sharing.test.ts"): {
+        b"not-a-real-api-key-value",
+    },
+}
 
 for raw_path in paths:
     path = Path(raw_path)
@@ -72,6 +82,14 @@ for raw_path in paths:
         continue
     for label, pattern in rules.items():
         for match in pattern.finditer(data):
+            if (label == "E.164 phone"
+                    and raw_path == PurePosixPath("pi/signal-bridge/test_signal_pi_bridge.py")
+                    and match.group() in {b"+" + b"15555550123", b"+" + b"15555550999"}):
+                continue  # Exact synthetic unit-test identities only.
+            if label == "generic assigned secret":
+                value = re.search(rb"[\"']([^\"']+)[\"']$", match.group())
+                if value and value.group(1) in synthetic_test_values.get(raw_path, set()):
+                    continue
             if label == "email address":
                 domain = match.group().rsplit(b"@", 1)[-1].lower()
                 if domain in allowed_email_domains:

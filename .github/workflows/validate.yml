@@ -12,5 +12,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: |
+          python3 -m pip install pytest==9.0.2
+          sudo apt-get update
+          sudo apt-get install -y shellcheck tmux openssl
+          npm ci --ignore-scripts --prefix pi/pr-review
       - name: Validate export
         run: ./tests/check-export.sh
+      - name: Isolated bridge compatibility
+        run: sudo bash scripts/test-bridge-isolated.sh
+      - name: Sharing boundary tests
+        run: pi/pr-review/node_modules/.bin/tsx --test pi/extensions/agora-harness-learning/core.test.ts pi/extensions/agora-harness-learning/sharing.test.ts

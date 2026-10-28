@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "reviewed_at": "2026-10-28",
+  "scope": "source-refresh-not-complete-host-reproduction",
+  "observed_pi_package": {
+    "name": "@earendil-works/pi-coding-agent",
+    "version": "0.83.0",
+    "upstream": "https://github.com/earendil-works/pi",
+    "registry_install_equivalence_verified": false
+  },
+  "python": ">=3.10",
+  "platform": "Linux",
+  "python_optional_modules_required": ["sqlite3 with FTS5"],
+  "external_deployment_requirements": [
+    "operator-approved Pi executable and provider authentication",
+    "proof-enabled wrapper and matching extension",
+    "Signal CLI service and authorized routing configuration",
+    "tmux and a compatible terminal registrar when enabled",
+    "per-vault adapter bindings and integrity manifests",
+    "operator-owned secret broker and permissions"
+  ],
+  "not_exported": [
+    "credentials, populated configurations, conversations and memory contents",
+    "host-specific activation adapters and private routing mappings",
+    "bundled Pi core binaries and dependencies",
+    "terminal registrar implementation",
+    "agent-facing memory_search tool binding"
+  ],
+  "offline_bridge_tests": {"passed": 182, "host_contracts_skipped": 2},
+  "provider_or_live_signal_calls_used_for_validation": 0
+}

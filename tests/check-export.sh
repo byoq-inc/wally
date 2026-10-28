@@ -48,7 +48,9 @@ python3 -m py_compile \
   pi/github-webhook.py pi/github-review/*.py pi/signal-bridge/*.py \
   operations/agent-work/*.py pi/extensions/memory/session-recall.py \
   pi/skills/db-readonly/scripts/*.py pi/skills/web-search/scripts/*.py \
-  pi/skills/signal-group-creator/scripts/*.py
+  pi/skills/signal-group-creator/scripts/*.py \
+  components/entity-memory/entity_memory/*.py components/memory-curator/*.py \
+  scripts/stage-memory-runtime.py
 
 mapfile -t shell_files < <(find components operations scripts tests pi/skills -type f \
   \( -name '*.sh' -o -path '*/op-auth-broker-start' \) -print | sort)
@@ -120,5 +122,10 @@ if errors:
     raise SystemExit('\n'.join(sorted(set(errors))))
 print(f'Reference closure passed: {len(tracked)} files, {len(skills)} skills')
 PY
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$repo_root/components/memory-curator" \
+  python3 -m pytest -p no:cacheprovider components/memory-curator/tests \
+  tests/test_stage_memory_runtime.py tests/test_export_validation.py -q
+(cd pi/signal-bridge && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_bridge_memory_retrieval)
 
 echo "Operational utility checks passed"
