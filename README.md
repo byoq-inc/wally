@@ -26,7 +26,7 @@ Product repositories remain separate. Wally does not vendor product application 
   - The former local `goal.ts` helper is intentionally absent. Normal interactive installations use the pinned public `@narumitw/pi-goal@0.52.1` package; managed-worker allowlists may exclude global packages.
 - `components/op-auth-broker/`: caller-allowlisted, memory-only 1Password credential broker and client.
 
-**Export inventory (2026-09-12):** every installed extension and skill source path is represented after excluding generated `dist/`, packaged `.skill` files, caches, and runtime state. Deployment-specific vault names and host paths remain parameterized or sanitized where needed; this is source parity, not byte-for-byte host mirroring.
+**Historical export inventory (2026-09-12):** the export was reported to represent installed extension and skill source paths, excluding generated output and runtime state. This is not a current parity claim. The 2026-10-28 source refresh covers the bridge and selected memory/sharing components. It does not reconcile the bundled Pi core, host activation adapters, all remaining extensions, operations or third-party skill updates. Existing sanitized examples and pinned dependency ranges are retained rather than overwritten with host-specific values.
 - `operations/systemd/`, `operations/cron/`, and `operations/scripts/`: retained service, schedule, and glue definitions for the control plane and entity-memory/private-memory integration.
 
 ## Current deployment assumptions
@@ -86,6 +86,31 @@ When an assumption changes, update this section, update any persisted policy fin
 | Optional web/database tools | `BRAVE_API_KEY` (search only), `DATABASE_URL` (dedicated read-only DB role), `AWS_PROFILE` (dedicated read-only role) | Runtime environment or approved credential store; validate one read plus a denied-write probe | Tool refuses the operation or remains unavailable |
 
 Never commit populated environment/config files, provider credentials, account identifiers, Signal/Pi sessions, memories, logs, databases, browser profiles, generated caches, or worktrees. The export validator rejects common secret patterns and prohibited state/file categories. A missing optional integration never authorizes broader credentials or fallback access.
+
+## Memory runtime staging (source refresh)
+
+The selected bridge, entity-memory and curator Python sources require Python 3.10+ on Linux with SQLite FTS5. They use Python standard-library modules. Tests also require pytest. Pi, Signal CLI, tmux, credential brokers, terminal registration and provider authentication are external deployment dependencies, not installed by staging. The bridge document-search helper is distinct from Pi's agent-facing `memory_search` tool; this source bundle does not reproduce that core tool.
+
+`python3 scripts/stage-memory-runtime.py --output /absolute/new/release-directory` copies exactly 18 allowlisted Python files plus a SHA-256 manifest into a new private directory. Its parent must already exist. It refuses existing destinations and symlinked source paths. It never copies configuration, vaults, sessions or credentials, and never starts services. An interrupted directory without `SOURCE-MANIFEST.json` is incomplete; do not activate it. Staging is not a full installation or a claim of live-runtime parity.
+
+For entity CLI imports, set `PYTHONPATH` to the staged `entity` directory. Bridge helpers reside together in `bridge`; curator helpers reside in `curator`. Run each capability only after its separate configuration and authorization review. Existing root-oriented bridge defaults and current example configuration are not yet certified as portable or release-compatible.
+
+The curator requires explicit `--config`, `--state` and `--main-memory` paths. `PI_GROUP_MEMORY_MODEL_COMMAND` must be a JSON array with an absolute executable and nonempty arguments. No model/provider/path fallback is supplied. The prompt is appended as one argv argument without a shell. The command is operator-trusted: select a model runner with tools, extensions, session persistence and unrelated context disabled. **Curation reads private evidence and calls that runner; `--dry-run` still calls it and creates a state directory/lock.** Do not use real vaults for tests. This change is export-only and does not modify any installed service.
+
+Isolated validation commands:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/components/memory-curator" python3 -m pytest -p no:cacheprovider components/memory-curator/tests tests/test_stage_memory_runtime.py
+(cd pi/signal-bridge && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_bridge_memory_retrieval)
+```
+
+These tests use synthetic local fixtures and fake model processes, not provider credentials or live Signal delivery. They do not establish production readiness.
+
+On a Linux test host with namespace privileges, `sudo bash scripts/test-bridge-isolated.sh` runs the broader bridge suite in private mount, network and PID namespaces. The checkout is read-only; host `/root`, `/home`, `/opt`, `/run` and `/tmp` are masked. Nonfunctional wrapper/registrar fixtures satisfy file validation; real external calls remain mocked. Results: 182 tests passed, two host-configuration contracts explicitly skipped because populated deployment configuration must not be exported. The harness keeps an init shell so controller tests do not run as namespace PID 1.
+
+Sharing-boundary tests run with `pi/pr-review/node_modules/.bin/tsx --test pi/extensions/agora-harness-learning/core.test.ts pi/extensions/agora-harness-learning/sharing.test.ts` after installing the pinned PR-review dependencies. All 24 tests pass with network access disabled. These test sharing logic, not live publication or Pi extension loading.
+
+`config/runtime-compatibility.json` records the observed Pi package version and external requirements. Package metadata alone does not prove a clean registry installation equals the customized live distribution. The repo deliberately does not copy private activation adapters, memory stores, conversations or credentials. A fresh-host deployment still requires operator-specific integration and acceptance testing.
 
 ## Offline validation
 
