@@ -1,0 +1,10 @@
+{
+  "host": "127.0.0.1",
+  "port": 9876,
+  "path": "/webhook",
+  "workspace": "/srv/wally/workspace",
+  "log_dir": "/var/log/wally-github-webhook",
+  "max_runtime_seconds": 1800,
+  "pi_command": ["/usr/local/bin/pi"],
+  "secret": "<load-from-GITHUB_WEBHOOK_SECRET-in-production>"
+}

@@ -1,0 +1,11 @@
+{
+  "vault": "<automation-vault-name>",
+  "cache_limit": 32,
+  "secrets": {
+    "github_app_key": {"ref": "op://<vault>/<item>/<field>"}
+  },
+  "callers": {
+    "github-review": ["github_app_key"]
+  },
+  "discovery_callers": []
+}

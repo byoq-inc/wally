@@ -1,0 +1,11 @@
+/root/Projects/agent-work/control/logs/*.log {
+    daily
+    rotate 7
+    size 10M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0600 root root
+}

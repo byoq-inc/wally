@@ -1,0 +1,15 @@
+{
+  "extends": "/root/openclaw/tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node"],
+    "baseUrl": ".",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "paths": {
+      "typebox": ["/usr/lib/node_modules/@mariozechner/pi-coding-agent/node_modules/typebox/build/index.mjs"]
+    }
+  },
+  "include": ["./**/*.ts"]
+}

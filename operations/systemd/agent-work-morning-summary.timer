@@ -1,0 +1,10 @@
+[Unit]
+Description=Send nightly Pi agent summary at 8:10 AM Eastern
+
+[Timer]
+OnCalendar=*-*-* 08:10:00 America/New_York
+Persistent=true
+Unit=agent-work-morning-summary.service
+
+[Install]
+WantedBy=timers.target
